@@ -12,7 +12,7 @@ object CollectiveALSTest extends App {{
 
   val Seq(train, test) = Utils.splitChronologically(data.ratings, Seq(0.99, 0.01))
 
-  val als = new ALS()
+  val als = new CollectiveALS()
     .setMaxIter(20)
     .setRegParam(0.01)
     .setUserCol("userId")

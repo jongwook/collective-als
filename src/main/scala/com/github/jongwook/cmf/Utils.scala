@@ -1,8 +1,13 @@
 package com.github.jongwook.cmf
 
+import java.util.Random
+
 import org.apache.spark.sql.{Encoder, Dataset}
 
 object Utils {
+
+  val random = new Random()
+
   def splitChronologically[T](data: Dataset[T], weights: Seq[Double], timeColumn: String = "timestamp"): Seq[Dataset[T]] = {
     val encoderField = data.getClass.getDeclaredField("exprEnc")
     encoderField.setAccessible(true)
