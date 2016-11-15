@@ -1,6 +1,6 @@
-package com.github.jongwook.cmf
+package com.github.jongwook.cmf.spark
 
-import org.apache.spark.sql.types.{StructField, NumericType, DataType, StructType}
+import org.apache.spark.sql.types.{DataType, NumericType, StructField, StructType}
 
 object SchemaUtils {
 

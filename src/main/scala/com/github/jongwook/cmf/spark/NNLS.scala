@@ -1,4 +1,4 @@
-package com.github.jongwook.cmf
+package com.github.jongwook.cmf.spark
 
 import java.{util => ju}
 

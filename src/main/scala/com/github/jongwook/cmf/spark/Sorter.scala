@@ -1,6 +1,8 @@
-package com.github.jongwook.cmf
+package com.github.jongwook.cmf.spark
 
 import java.util.Comparator
+
+import TimSort
 
 class Sorter[K, Buffer](private val s: SortDataFormat[K, Buffer]) {
 

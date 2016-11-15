@@ -1,4 +1,4 @@
-package com.github.jongwook.cmf
+package com.github.jongwook.cmf.spark
 
 import com.github.fommil.netlib.LAPACK.{getInstance => lapack}
 import org.netlib.util.intW

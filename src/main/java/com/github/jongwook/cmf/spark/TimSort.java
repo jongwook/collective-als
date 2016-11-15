@@ -33,7 +33,7 @@
  *  limitations under the License.
  */
 
-package com.github.jongwook.cmf;
+package com.github.jongwook.cmf.spark;
 
 import java.util.Comparator;
 

@@ -4,6 +4,7 @@ import java.{util => ju}
 import java.io.IOException
 
 import com.github.jongwook.cmf.CollectiveALS.Rating
+import com.github.jongwook.cmf.spark._
 import org.apache.hadoop.fs.Path
 import org.apache.spark.{ShuffleDependency, Dependency, SparkContext, Partitioner}
 import org.apache.spark.annotation.{Since, DeveloperApi}

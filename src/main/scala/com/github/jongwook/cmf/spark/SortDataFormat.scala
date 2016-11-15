@@ -1,4 +1,4 @@
-package com.github.jongwook.cmf
+package com.github.jongwook.cmf.spark
 
 abstract class SortDataFormat[K, Buffer] {
 

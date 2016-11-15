@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-package com.github.jongwook.cmf
+package com.github.jongwook.cmf.spark
 
 import java.nio.ByteBuffer
 import java.util.{Random => JavaRandom}

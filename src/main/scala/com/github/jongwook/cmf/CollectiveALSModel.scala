@@ -1,6 +1,7 @@
 package com.github.jongwook.cmf
 
 import com.github.fommil.netlib.BLAS.{getInstance => blas}
+import com.github.jongwook.cmf.spark.SchemaUtils
 import org.apache.spark.ml.Model
 import org.apache.spark.ml.param.ParamMap
 import org.apache.spark.sql.functions._
