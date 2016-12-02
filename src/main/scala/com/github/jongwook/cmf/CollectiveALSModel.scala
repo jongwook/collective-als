@@ -2,20 +2,32 @@ package com.github.jongwook.cmf
 
 import com.github.fommil.netlib.BLAS.{getInstance => blas}
 import com.github.jongwook.cmf.spark.SchemaUtils
-import org.apache.spark.ml.Model
-import org.apache.spark.ml.param.ParamMap
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.types.{DoubleType, FloatType, StructType}
 import org.apache.spark.sql.{DataFrame, Dataset}
+import java.{util => ju}
 
-class CollectiveALSModel(override val uid: String, rank: Int, userFactors: DataFrame, itemFactors: DataFrame) extends Model[CollectiveALSModel] {
+class CollectiveALSModel(rank: Int, factors: DataFrame*) extends Serializable {
 
-  var userCol: String = "user"
-  var itemCol: String = "item"
+  private val cols = new Array[String](factors.size)
+  cols(0) = "user"
+  cols(1) = "item"
+
+  def userCol: String = cols(0)
+  def itemCol: String = cols(1)
+  def col(index: Int): String = cols(index)
+
   var predictionCol: String = "prediction"
 
-  def setUserCol(value: String): this.type = { userCol = value; this }
-  def setItemCol(value: String): this.type = { itemCol = value; this }
+  def setUserCol(value: String): this.type = { cols(0) = value; this }
+  def setItemCol(value: String): this.type = { cols(1) = value; this }
+  def setCol(index: Int, value: String): this.type = { cols(index) = value; this }
+  def setEntityCols(values: Seq[String]): this.type = {
+    require(values.length == factors.size, s"There should be exactly ${factors.size} columns")
+    System.arraycopy(values.toArray, 0, cols, 0, values.length)
+    this
+  }
+
   def setPredictionCol(value: String): this.type = { predictionCol = value; this }
 
   val checkedCast = udf { (n: Double) =>
@@ -27,7 +39,14 @@ class CollectiveALSModel(override val uid: String, rank: Int, userFactors: DataF
     }
   }
 
-  override def transform(dataset: Dataset[_]): DataFrame = {
+  def predict(dataset: Dataset[_], leftEntity: String = cols(0), rightEntity: String = cols(1)): DataFrame = {
+    val Seq(leftFactors, rightFactors) = Seq(leftEntity, rightEntity).map { entity =>
+      cols.indexOf(entity) match {
+        case -1 => throw new IllegalArgumentException(s"Unknown entity: $entity")
+        case index => factors(index)
+      }
+    }
+
     transformSchema(dataset.schema)
     // Register a UDF for DataFrame, and then
     // create a new column named map(predictionCol) by running the predict UDF.
@@ -39,23 +58,19 @@ class CollectiveALSModel(override val uid: String, rank: Int, userFactors: DataF
       }
     }
     dataset
-      .join(userFactors,
-        checkedCast(dataset(userCol).cast(DoubleType)) === userFactors("id"), "left")
-      .join(itemFactors,
-        checkedCast(dataset(itemCol).cast(DoubleType)) === itemFactors("id"), "left")
+      .join(leftFactors,
+        checkedCast(dataset(leftEntity).cast(DoubleType)) === leftFactors("id"), "left")
+      .join(rightFactors,
+        checkedCast(dataset(rightEntity).cast(DoubleType)) === rightFactors("id"), "left")
       .select(dataset("*"),
-        predict(userFactors("features"), itemFactors("features")).as(predictionCol))
+        predict(leftFactors("features"), rightFactors("features")).as(predictionCol))
   }
 
-  override def transformSchema(schema: StructType): StructType = {
+  def transformSchema(schema: StructType): StructType = {
     // user and item will be cast to Int
     SchemaUtils.checkNumericType(schema, userCol)
     SchemaUtils.checkNumericType(schema, itemCol)
     SchemaUtils.appendColumn(schema, predictionCol, FloatType)
   }
 
-  override def copy(extra: ParamMap): CollectiveALSModel = {
-    val copied = new CollectiveALSModel(uid, rank, userFactors, itemFactors)
-    copyValues(copied, extra).setParent(parent)
-  }
 }

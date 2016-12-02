@@ -1,7 +1,6 @@
 package com.github.jongwook.cmf
 
 import com.github.jongwook.SparkRankingMetrics
-import org.apache.spark.ml.recommendation.ALS
 import org.apache.spark.sql.SparkSession
 
 object CollectiveALSTest extends App {{
@@ -12,7 +11,7 @@ object CollectiveALSTest extends App {{
 
   val Seq(train, test) = Utils.splitChronologically(data.ratings, Seq(0.99, 0.01))
 
-  val als = new CollectiveALS()
+  val als = new CollectiveALS("user", "item")
     .setMaxIter(20)
     .setRegParam(0.01)
     .setUserCol("userId")
@@ -20,7 +19,7 @@ object CollectiveALSTest extends App {{
     .setRatingCol("rating")
 
   val model = als.fit(train)
-  val predicted = model.transform(test)
+  val predicted = model.predict(test)
 
   val metrics = SparkRankingMetrics(predicted, test.toDF)
   metrics.setUserCol("userId")

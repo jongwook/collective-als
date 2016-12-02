@@ -8,9 +8,6 @@ import com.github.jongwook.cmf.spark._
 import org.apache.hadoop.fs.Path
 import org.apache.spark.{ShuffleDependency, Dependency, SparkContext, Partitioner}
 import org.apache.spark.annotation.{Since, DeveloperApi}
-import org.apache.spark.ml.Estimator
-import org.apache.spark.ml.param.ParamMap
-import org.apache.spark.ml.util.{Identifiable}
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.Dataset
 import org.apache.spark.sql.types.{DoubleType, FloatType, StructType}
@@ -26,17 +23,31 @@ import scala.util.Sorting
 import scala.util.hashing.byteswap64
 
 
-class CollectiveALS(override val uid: String) extends Estimator[CollectiveALSModel] {
-
-  def this() = this(Identifiable.randomUID("collective-als"))
+class CollectiveALS(entities: String*) extends Serializable {
 
   var rank: Int = 10
-  var numUserBlocks: Int = 10
-  var numItemBlocks: Int = 10
+
+  val numBlocks = new Array[Int](entities.size)
+  ju.Arrays.fill(numBlocks, 10)
+
+  def numUserBlocks: Int = numBlocks(0)
+  def numItemBlocks: Int = numBlocks(1)
+
   var implicitPrefs: Boolean = false
   var alpha: Double = 1.0
-  var userCol: String = "user"
-  var itemCol: String = "item"
+
+  private val cols: Array[String] = {
+    entities.size match {
+      case 0 => Array("user", "item")
+      case 1 => throw new IllegalArgumentException("There should be at least 2 entities")
+      case _ => entities.toArray
+    }
+  }
+
+  def userCol: String = cols(0)
+  def itemCol: String = cols(1)
+  def entityCol(index: Int): String = cols(index)
+
   var ratingCol: String = "rating"
   var predictionCol: String = "prediction"
   var maxIter: Int = 10
@@ -48,12 +59,18 @@ class CollectiveALS(override val uid: String) extends Estimator[CollectiveALSMod
   var finalStorageLevel: String = "MEMORY_AND_DISK"
 
   def setRank(value: Int): this.type = { rank = value; this }
-  def setNumUserBlocks(value: Int): this.type = { numUserBlocks = value; this }
-  def setNumItemBlocks(value: Int): this.type = { numItemBlocks = value; this }
+
+  def setNumUserBlocks(value: Int): this.type = { numBlocks(0) = value; this }
+  def setNumItemBlocks(value: Int): this.type = { numBlocks(1) = value; this }
+  def setNumBlocks(index: Int, value: Int): this.type = { numBlocks(index) = value; this }
+
   def setImplicitPrefs(value: Boolean): this.type = { implicitPrefs = value; this }
   def setAlpha(value: Double): this.type = { alpha = value; this }
-  def setUserCol(value: String): this.type = { userCol = value; this }
-  def setItemCol(value: String): this.type = { itemCol = value; this }
+
+  def setUserCol(value: String): this.type = { cols(0) = value; this }
+  def setItemCol(value: String): this.type = { cols(1) = value; this }
+  def setEntityCol(index: Int, value: String): this.type = { cols(index) = value; this }
+
   def setRatingCol(value: String): this.type = { ratingCol = value; this }
   def setPredictionCol(value: String): this.type = { predictionCol = value; this }
   def setMaxIter(value: Int): this.type = { maxIter = value; this }
@@ -64,11 +81,7 @@ class CollectiveALS(override val uid: String) extends Estimator[CollectiveALSMod
   def setIntermediateStorageLevel(value: String): this.type = { intermediateStorageLevel = value; this }
   def setFinalStorageLevel(value: String): this.type = { finalStorageLevel = value; this }
 
-  def setNumBlocks(value: Int): this.type = {
-    numUserBlocks = value
-    numItemBlocks = value
-    this
-  }
+  def setNumBlocks(value: Int): this.type = { ju.Arrays.fill(numBlocks, value); this }
 
   val checkedCast = udf { (n: Double) =>
     if (n > Int.MaxValue || n < Int.MinValue) {
@@ -79,7 +92,7 @@ class CollectiveALS(override val uid: String) extends Estimator[CollectiveALSMod
     }
   }
 
-  override def fit(dataset: Dataset[_]): CollectiveALSModel = {
+  def fit(dataset: Dataset[_]): CollectiveALSModel = {
     transformSchema(dataset.schema)
     import dataset.sparkSession.implicits._
 
@@ -104,17 +117,13 @@ class CollectiveALS(override val uid: String) extends Estimator[CollectiveALSMod
       checkpointInterval = checkpointInterval, seed = seed)
     val userDF = userFactors.toDF("id", "features")
     val itemDF = itemFactors.toDF("id", "features")
-    val model = new CollectiveALSModel(uid, rank, userDF, itemDF).setParent(this)
+    val model = new CollectiveALSModel(rank, userDF, itemDF)
     //instrLog.logSuccess(model)
-    model.setUserCol(userCol)
-    model.setItemCol(itemCol)
+    model.setEntityCols(cols)
     model.setPredictionCol(predictionCol)
   }
 
-  override def copy(extra: ParamMap): Estimator[CollectiveALSModel] = ???
-
-  @DeveloperApi
-  override def transformSchema(schema: StructType): StructType = {
+  def transformSchema(schema: StructType): StructType = {
     SchemaUtils.checkNumericType(schema, userCol)
     SchemaUtils.checkNumericType(schema, itemCol)
     // rating will be cast to Float
