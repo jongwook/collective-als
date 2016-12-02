@@ -92,31 +92,44 @@ class CollectiveALS(entities: String*) extends Serializable {
     }
   }
 
-  def fit(dataset: Dataset[_]): CollectiveALSModel = {
-    transformSchema(dataset.schema)
-    import dataset.sparkSession.implicits._
+  def fit(dataset: Dataset[_]): CollectiveALSModel = fit((cols(0), cols(1)) -> dataset)
+
+  def fit(datasets: ((String, String), Dataset[_])*): CollectiveALSModel = {
+    datasets.foreach {
+      case (_, dataset) => transformSchema(dataset.schema)
+    }
+
+    val session = datasets.head._2.sparkSession
+    import session.implicits._
 
     val r = if (ratingCol != "") col(ratingCol).cast(FloatType) else lit(1.0f)
-    val ratings = dataset
-      .select(checkedCast(col(userCol).cast(DoubleType)),
-        checkedCast(col(itemCol).cast(DoubleType)), r)
-      .rdd
-      .map { row =>
-        Rating(row.getInt(0), row.getInt(1), row.getFloat(2))
-      }
+    val data = datasets.map {
+      case ((leftEntity, rightEntity), dataset) =>
+        val Seq(left, right) = Seq(leftEntity, rightEntity).map(cols.indexOf)
+
+        if (left == -1) throw new IllegalArgumentException(s"Unknown entity: $leftEntity")
+        if (right == -1) throw new IllegalArgumentException(s"Unknown entity: $rightEntity")
+
+        val ratings = dataset
+          .select(checkedCast(col(leftEntity).cast(DoubleType)), checkedCast(col(rightEntity).cast(DoubleType)), r)
+          .rdd.map { row =>
+            Rating(row.getInt(0), row.getInt(1), row.getFloat(2))
+          }
+
+        (left, right) -> ratings
+    }
     //val instrLog = Instrumentation.create(this, ratings)
     //instrLog.logParams(rank, numUserBlocks, numItemBlocks, implicitPrefs, alpha,
     //  userCol, itemCol, ratingCol, predictionCol, maxIter,
     //  regParam, nonnegative, checkpointInterval, seed)
-    val (userFactors, itemFactors) = CollectiveALS.train(ratings, rank = rank,
-      numUserBlocks = numUserBlocks, numItemBlocks = numItemBlocks,
-      maxIter = maxIter, regParam = regParam, implicitPrefs = implicitPrefs,
+    val factors: Seq[RDD[(Int, Array[Float])]] = CollectiveALS.train(data, rank = rank,
+      numBlocks = numBlocks, maxIter = maxIter, regParam = regParam, implicitPrefs = implicitPrefs,
       alpha = alpha, nonnegative = nonnegative,
       intermediateRDDStorageLevel = StorageLevel.fromString(intermediateStorageLevel),
       finalRDDStorageLevel = StorageLevel.fromString(finalStorageLevel),
       checkpointInterval = checkpointInterval, seed = seed)
-    val userDF = userFactors.toDF("id", "features")
-    val itemDF = itemFactors.toDF("id", "features")
+
+    val dataFrames = factors.map(_.toDF("id", "features"))
     val model = new CollectiveALSModel(rank, userDF, itemDF)
     //instrLog.logSuccess(model)
     model.setEntityCols(cols)
@@ -297,10 +310,10 @@ object CollectiveALS {
     */
   @DeveloperApi
   def train[ID: ClassTag]( // scalastyle:ignore
-    ratings: RDD[Rating[ID]],
+    data: Seq[((Int, Int), RDD[Rating[ID]])],
+    entities: Seq[String],
     rank: Int = 10,
-    numUserBlocks: Int = 10,
-    numItemBlocks: Int = 10,
+    numBlocks: Seq[Int] = Seq(10),
     maxIter: Int = 10,
     regParam: Double = 1.0,
     implicitPrefs: Boolean = false,
@@ -311,44 +324,66 @@ object CollectiveALS {
     checkpointInterval: Int = 10,
     seed: Long = 0L)(
     implicit ord: Ordering[ID]): (RDD[(ID, Array[Float])], RDD[(ID, Array[Float])]) = {
+
     require(intermediateRDDStorageLevel != StorageLevel.NONE,
       "ALS is not designed to run without persisting intermediate RDDs.")
-    val sc = ratings.sparkContext
-    val userPart = new ALSPartitioner(numUserBlocks)
-    val itemPart = new ALSPartitioner(numItemBlocks)
-    val userLocalIndexEncoder = new LocalIndexEncoder(userPart.numPartitions)
-    val itemLocalIndexEncoder = new LocalIndexEncoder(itemPart.numPartitions)
-    val solver = if (nonnegative) new NNLSSolver else new CholeskySolver
-    val blockRatings = partitionRatings(ratings, userPart, itemPart)
-      .persist(intermediateRDDStorageLevel)
-    val (userInBlocks, userOutBlocks) =
-      makeBlocks("user", blockRatings, userPart, itemPart, intermediateRDDStorageLevel)
-    // materialize blockRatings and user blocks
-    userOutBlocks.count()
-    val swappedBlockRatings = blockRatings.map {
-      case ((userBlockId, itemBlockId), RatingBlock(userIds, itemIds, localRatings)) =>
-        ((itemBlockId, userBlockId), RatingBlock(itemIds, userIds, localRatings))
+
+    val sc = data.head._2.sparkContext
+
+    val numDataFrames = data.size
+    val numEntities = entities.size
+
+    /** partitioner for each factor, length: numEntities */
+    val partitioners = (numBlocks.size match {
+      case 1 => List.fill(numEntities)(numBlocks.head)
+      case n if n == numEntities => numBlocks
+      case _ => throw new IllegalArgumentException("numBlocks should have the same size as the number of entities")
+    }).map {
+      blocks => new ALSPartitioner(blocks)
     }
-    val (itemInBlocks, itemOutBlocks) =
-      makeBlocks("item", swappedBlockRatings, itemPart, userPart, intermediateRDDStorageLevel)
-    // materialize item blocks
-    itemOutBlocks.count()
-    val seedGen = new XORShiftRandom(seed)
-    var userFactors = initialize(userInBlocks, rank, seedGen.nextLong())
-    var itemFactors = initialize(itemInBlocks, rank, seedGen.nextLong())
-    var previousCheckpointFile: Option[String] = None
-    val shouldCheckpoint: Int => Boolean = (iter) =>
-      sc.getCheckpointDir.isDefined && checkpointInterval != -1 && (iter % checkpointInterval == 0)
-    val deletePreviousCheckpointFile: () => Unit = () =>
-      previousCheckpointFile.foreach { file =>
-        try {
-          val checkpointFile = new Path(file)
-          checkpointFile.getFileSystem(sc.hadoopConfiguration).delete(checkpointFile, true)
-        } catch {
-          case e: IOException =>
-            logger.warn(s"Cannot delete checkpoint file $file:", e)
+
+    /** length: numEntities */
+    val indexEncoders = partitioners.map{ part => new LocalIndexEncoder(part.numPartitions) }
+
+    val solver = if (nonnegative) new NNLSSolver else new CholeskySolver
+
+    /** length: numDataFrames */
+    val entityInOutBlocks = data.zipWithIndex.map {
+      case (((left, right), ratings), index) =>
+        val blockRatings = partitionRatings(ratings, partitioners(left), partitioners(right)).persist(intermediateRDDStorageLevel)
+
+        val leftEntity = entities(left)
+        val rightEntity = entities(right)
+
+        val leftPartitioner = partitioners(left)
+        val rightPartitioner = partitioners(right)
+
+        val (leftInBlocks, leftOutBlocks) = makeBlocks(leftEntity, blockRatings, leftPartitioner, rightPartitioner, intermediateRDDStorageLevel)
+        leftOutBlocks.count()
+
+        val swappedBlockRatings = blockRatings.map {
+          case ((leftBlockId, rightBlockId), RatingBlock(leftIds, rightIds, localRatings)) =>
+            ((rightBlockId, leftBlockId), RatingBlock(rightIds, leftIds, localRatings))
         }
-      }
+
+        val (rightInBlocks, rightOutBlocks) = makeBlocks(rightEntity, blockRatings, rightPartitioner, leftPartitioner, intermediateRDDStorageLevel)
+
+        rightOutBlocks.count()
+
+        (leftInBlocks -> leftOutBlocks, rightInBlocks -> rightOutBlocks)
+    }
+
+    val seedGen = new XORShiftRandom(seed)
+
+    val entityFactors = entityInOutBlocks.map {
+      case ((leftInBlocks, _), (rightInBlocks, _)) =>
+        val leftFactors = initialize(leftInBlocks, rank, seedGen.nextLong())
+        val rightFactors = initialize(rightInBlocks, rank, seedGen.nextLong())
+
+        (leftFactors, rightFactors)
+    }
+
+
     if (implicitPrefs) {
       for (iter <- 1 to maxIter) {
         userFactors.setName(s"userFactors-$iter").persist(intermediateRDDStorageLevel)
@@ -359,35 +394,21 @@ object CollectiveALS {
         itemFactors.setName(s"itemFactors-$iter").persist(intermediateRDDStorageLevel)
         // TODO: Generalize PeriodicGraphCheckpointer and use it here.
         val deps = itemFactors.dependencies
-        if (shouldCheckpoint(iter)) {
-          itemFactors.checkpoint() // itemFactors gets materialized in computeFactors
-        }
         val previousUserFactors = userFactors
         userFactors = computeFactors(itemFactors, itemOutBlocks, userInBlocks, rank, regParam,
           itemLocalIndexEncoder, implicitPrefs, alpha, solver)
-        if (shouldCheckpoint(iter)) {
-          CollectiveALS.cleanShuffleDependencies(sc, deps)
-          deletePreviousCheckpointFile()
-          previousCheckpointFile = itemFactors.getCheckpointFile
-        }
         previousUserFactors.unpersist()
       }
     } else {
       for (iter <- 0 until maxIter) {
         itemFactors = computeFactors(userFactors, userOutBlocks, itemInBlocks, rank, regParam,
           userLocalIndexEncoder, solver = solver)
-        if (shouldCheckpoint(iter)) {
-          val deps = itemFactors.dependencies
-          itemFactors.checkpoint()
-          itemFactors.count() // checkpoint item factors and cut lineage
-          CollectiveALS.cleanShuffleDependencies(sc, deps)
-          deletePreviousCheckpointFile()
-          previousCheckpointFile = itemFactors.getCheckpointFile
-        }
         userFactors = computeFactors(itemFactors, itemOutBlocks, userInBlocks, rank, regParam,
           itemLocalIndexEncoder, solver = solver)
       }
     }
+
+
     val userIdAndFactors = userInBlocks
       .mapValues(_.srcIds)
       .join(userFactors)

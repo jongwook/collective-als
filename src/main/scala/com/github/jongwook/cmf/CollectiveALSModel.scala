@@ -1,11 +1,12 @@
 package com.github.jongwook.cmf
 
+import java.{util => ju}
+
 import com.github.fommil.netlib.BLAS.{getInstance => blas}
 import com.github.jongwook.cmf.spark.SchemaUtils
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.types.{DoubleType, FloatType, StructType}
 import org.apache.spark.sql.{DataFrame, Dataset}
-import java.{util => ju}
 
 class CollectiveALSModel(rank: Int, factors: DataFrame*) extends Serializable {
 
@@ -15,13 +16,13 @@ class CollectiveALSModel(rank: Int, factors: DataFrame*) extends Serializable {
 
   def userCol: String = cols(0)
   def itemCol: String = cols(1)
-  def col(index: Int): String = cols(index)
+  def entityCol(index: Int): String = cols(index)
 
   var predictionCol: String = "prediction"
 
   def setUserCol(value: String): this.type = { cols(0) = value; this }
   def setItemCol(value: String): this.type = { cols(1) = value; this }
-  def setCol(index: Int, value: String): this.type = { cols(index) = value; this }
+  def setEntityCol(index: Int, value: String): this.type = { cols(index) = value; this }
   def setEntityCols(values: Seq[String]): this.type = {
     require(values.length == factors.size, s"There should be exactly ${factors.size} columns")
     System.arraycopy(values.toArray, 0, cols, 0, values.length)
