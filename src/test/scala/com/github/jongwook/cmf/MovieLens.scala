@@ -24,7 +24,7 @@ object MovieLens extends Implicits {
 
   def read[T: ClassTag : TypeTag](resource: String)(implicit spark: SparkSession, encoder: Encoder[T]): Dataset[T] = {
     val sc = spark.sparkContext
-    val lines = sc.parallelize(Resource.lines(resource).toSeq.tail)
+    val lines = sc.parallelize(Resource.lines(resource)(getClass.getClassLoader).toSeq.tail)
     val parsed = CSVRelation.univocityTokenizer(lines, null, CSVOptions())
     spark.createDataset(parsed.convertTo[T])
   }
