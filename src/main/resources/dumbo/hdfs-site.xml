@@ -66,4 +66,12 @@
     <name>dfs.datanode.hdfs-blocks-metadata.enabled</name>
     <value>true</value>
   </property>
+  <property>
+    <name>hadoop.socks.server</name>
+    <value>localhost:5128</value>
+  </property>
+  <property>
+    <name>hadoop.rpc.socket.factory.class.default</name>
+    <value>org.apache.hadoop.net.SocksSocketFactory</value>
+  </property>
 </configuration>

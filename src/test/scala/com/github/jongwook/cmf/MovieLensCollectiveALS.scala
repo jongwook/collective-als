@@ -1,15 +1,12 @@
 package com.github.jongwook.cmf
 
 import com.github.jongwook.SparkRankingMetrics
-import org.apache.spark.sql.SparkSession
+import com.kakao.cuesheet.CueSheet
 
 import scala.collection.mutable.ArrayBuffer
 
-object CollectiveALSTest extends App {{
-  implicit val spark = SparkSession.builder().master("local[8]").getOrCreate()
-  implicit val sc = spark.sparkContext
-
-  val data = MovieLens.load("src/test/resources/ml-latest-small")
+object MovieLensCollectiveALS extends CueSheet {{
+  val data = MovieLens.load("ml-latest-small")
 
   val Seq(train, test) = Utils.splitChronologically(data.ratings, Seq(0.99, 0.01))
 

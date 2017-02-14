@@ -8,7 +8,7 @@ import scala.collection.mutable.ArrayBuffer
 
 object MovieLensALS extends CueSheet {{
 
-  val data = MovieLens.load("src/test/resources/ml-latest-small")
+  val data = MovieLens.load("ml-latest-small")
 
   val Seq(train, test) = Utils.splitChronologically(data.ratings, Seq(0.99, 0.01))
 
