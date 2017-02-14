@@ -1,23 +1,23 @@
 package com.github.jongwook.cmf
 
 import java.{util => ju}
-import java.io.IOException
 
+import com.github.fommil.netlib.BLAS.{getInstance => blas}
 import com.github.jongwook.cmf.CollectiveALS.Rating
 import com.github.jongwook.cmf.spark._
-import org.apache.hadoop.fs.Path
-import org.apache.spark.{ShuffleDependency, Dependency, SparkContext, Partitioner}
-import org.apache.spark.annotation.{Since, DeveloperApi}
+import org.apache.spark.annotation.DeveloperApi
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.Dataset
-import org.apache.spark.sql.types.{DoubleType, FloatType, StructType}
 import org.apache.spark.sql.functions._
+import org.apache.spark.sql.types.{DoubleType, FloatType, StructType}
 import org.apache.spark.storage.StorageLevel
-import com.github.fommil.netlib.BLAS.{getInstance => blas}
 import org.apache.spark.util.collection.OpenHashSet
+import org.apache.spark.{Dependency, Partitioner, ShuffleDependency, SparkContext}
+import org.apache.spark.SparkContext._
 import org.slf4j.LoggerFactory
 
 import scala.collection.mutable
+import scala.collection.mutable.ArrayBuffer
 import scala.reflect.ClassTag
 import scala.util.Sorting
 import scala.util.hashing.byteswap64
@@ -412,11 +412,41 @@ object CollectiveALS {
           val dstInBlockSeq = reverseGroupedInOutBlocks(entity).map {
             case (src, inBlocks, outBlocks) => (src, inBlocks)
           }.sortBy(_._1)
-          val newFactors = computeFactors(oldFactors, srcOutBlockSeq, dstInBlockSeq, rank, regParam, encoder, solver = solver)
+          assert(srcOutBlockSeq.map(_._1) == dstInBlockSeq.map(_._1))
+          val srcFactors = srcOutBlockSeq.map { case (src, _) => entityFactors(src) }
+          val newFactors = computeFactors(srcFactors, srcOutBlockSeq, dstInBlockSeq, rank, regParam, encoder, solver = solver)
           entityFactors.update(entity, newFactors)
         }
       }
     }
+
+    val entityIdAndFactors = groupedInOutBlocks.toSeq.sortBy(_._1).map {
+      case (entity, blocks) =>
+        blocks.head._2.mapValues(_.srcIds)
+          .join(entityFactors(entity))
+          .mapPartitions({ items =>
+            items.flatMap { case (_, (ids, factors)) =>
+              ids.view.zip(factors)
+            }
+          }, preservesPartitioning = true)
+          .setName(s"${entities(entity)}Factors")
+          .persist(finalRDDStorageLevel)
+    }
+
+    if (finalRDDStorageLevel != StorageLevel.NONE) {
+      entityIdAndFactors.foreach(_.count())
+      entityFactors.values.foreach(_.unpersist())
+      entityInOutBlocks.foreach {
+        case ((left, (leftInBlock, leftOutBlock)), (right, (rightInBlock, rightOutBlock))) =>
+          leftInBlock.unpersist()
+          leftOutBlock.unpersist()
+          rightInBlock.unpersist()
+          rightOutBlock.unpersist()
+      }
+    }
+
+    entityIdAndFactors
+
 //
 //    if (implicitPrefs) {
 //      for (iter <- 1 to maxIter) {
@@ -441,42 +471,6 @@ object CollectiveALS {
 //          itemLocalIndexEncoder, solver = solver)
 //      }
 //    }
-//
-//
-//    val userIdAndFactors = userInBlocks
-//      .mapValues(_.srcIds)
-//      .join(userFactors)
-//      .mapPartitions({ items =>
-//        items.flatMap { case (_, (ids, factors)) =>
-//          ids.view.zip(factors)
-//        }
-//        // Preserve the partitioning because IDs are consistent with the partitioners in userInBlocks
-//        // and userFactors.
-//      }, preservesPartitioning = true)
-//      .setName("userFactors")
-//      .persist(finalRDDStorageLevel)
-//    val itemIdAndFactors = itemInBlocks
-//      .mapValues(_.srcIds)
-//      .join(itemFactors)
-//      .mapPartitions({ items =>
-//        items.flatMap { case (_, (ids, factors)) =>
-//          ids.view.zip(factors)
-//        }
-//      }, preservesPartitioning = true)
-//      .setName("itemFactors")
-//      .persist(finalRDDStorageLevel)
-//    if (finalRDDStorageLevel != StorageLevel.NONE) {
-//      userIdAndFactors.count()
-//      itemFactors.unpersist()
-//      itemIdAndFactors.count()
-//      userInBlocks.unpersist()
-//      userOutBlocks.unpersist()
-//      itemInBlocks.unpersist()
-//      itemOutBlocks.unpersist()
-//      blockRatings.unpersist()
-//    }
-//    (userIdAndFactors, itemIdAndFactors)
-    ???
   }
 
   /**
@@ -935,7 +929,7 @@ object CollectiveALS {
   /**
     * Compute dst factors by constructing and solving least square problems.
     *
-    * @param srcFactorBlocks src factors
+    * @param srcFactorBlockSeq src factors
     * @param srcOutBlockSeq src out-blocks
     * @param dstInBlockSeq dst in-blocks
     * @param rank rank
@@ -947,7 +941,7 @@ object CollectiveALS {
     * @return dst factors
     */
   private def computeFactors[ID](
-    srcFactorBlocks: RDD[(Int, FactorBlock)],
+    srcFactorBlockSeq: Seq[RDD[(Int, FactorBlock)]],
     srcOutBlockSeq: Seq[(Int, RDD[(Int, OutBlock)])],
     dstInBlockSeq: Seq[(Int, RDD[(Int, InBlock[ID])])],
     rank: Int,
@@ -956,60 +950,82 @@ object CollectiveALS {
     implicitPrefs: Boolean = false,
     alpha: Double = 1.0,
     solver: LeastSquaresNESolver): RDD[(Int, FactorBlock)] = {
-    val numSrcBlocks = srcFactorBlocks.partitions.length
-    val YtY = if (implicitPrefs) Some(computeYtY(srcFactorBlocks, rank)) else None
 
-    val srcOutBlocks = srcOutBlockSeq.head._2
-    val dstInBlocks = dstInBlockSeq.head._2
+    (srcOutBlockSeq zip dstInBlockSeq zip srcFactorBlockSeq).map {
+      case (((src, srcOutBlocks), (dst, dstInBlocks)), srcFactorBlocks) =>
+        val numSrcBlocks = srcFactorBlocks.partitions.length
+        val YtY = if (implicitPrefs) Some(computeYtY(srcFactorBlocks, rank)) else None
 
-    val srcOut = srcOutBlocks.join(srcFactorBlocks).flatMap {
-      case (srcBlockId, (srcOutBlock, srcFactors)) =>
-        srcOutBlock.view.zipWithIndex.map { case (activeIndices, dstBlockId) =>
-          (dstBlockId, (srcBlockId, activeIndices.map(idx => srcFactors(idx))))
-        }
-    }
-    val merged = srcOut.groupByKey(new ALSPartitioner(dstInBlocks.partitions.length))
-    dstInBlocks.join(merged).mapValues {
-      case (InBlock(dstIds, srcPtrs, srcEncodedIndices, ratings), srcFactors) =>
-        val sortedSrcFactors = new Array[FactorBlock](numSrcBlocks)
-        srcFactors.foreach { case (srcBlockId, factors) =>
-          sortedSrcFactors(srcBlockId) = factors
-        }
-        val dstFactors = new Array[Array[Float]](dstIds.length)
-        var j = 0
-        val ls = new NormalEquation(rank)
-        while (j < dstIds.length) {
-          ls.reset()
-          if (implicitPrefs) {
-            ls.merge(YtY.get)
-          }
-          var i = srcPtrs(j)
-          var numExplicits = 0
-          while (i < srcPtrs(j + 1)) {
-            val encoded = srcEncodedIndices(i)
-            val blockId = srcEncoder.blockId(encoded)
-            val localIndex = srcEncoder.localIndex(encoded)
-            val srcFactor = sortedSrcFactors(blockId)(localIndex)
-            val rating = ratings(i)
-            if (implicitPrefs) {
-              // Extension to the original paper to handle b < 0. confidence is a function of |b|
-              // instead so that it is never negative. c1 is confidence - 1.0.
-              val c1 = alpha * math.abs(rating)
-              // For rating <= 0, the corresponding preference is 0. So the term below is only added
-              // for rating > 0. Because YtY is already added, we need to adjust the scaling here.
-              if (rating > 0) {
-                numExplicits += 1
-                ls.add(srcFactor, (c1 + 1.0) / c1, c1)
-              }
-            } else {
-              ls.add(srcFactor, rating)
-              numExplicits += 1
+        val srcOut = srcOutBlocks.join(srcFactorBlocks).flatMap {
+          case (srcBlockId, (srcOutBlock, srcFactors)) =>
+            srcOutBlock.view.zipWithIndex.map { case (activeIndices, dstBlockId) =>
+              (dstBlockId, (srcBlockId, activeIndices.map(idx => srcFactors(idx))))
             }
-            i += 1
+        }
+        val merged = srcOut.groupByKey(new ALSPartitioner(dstInBlocks.partitions.length))
+        dstInBlocks.join(merged).mapValues {
+          case (InBlock(dstIds, srcPtrs, srcEncodedIndices, ratings), srcFactors) =>
+            val sortedSrcFactors = new Array[FactorBlock](numSrcBlocks)
+            srcFactors.foreach { case (srcBlockId, factors) =>
+              sortedSrcFactors(srcBlockId) = factors
+            }
+            //val dstFactors = new Array[Array[Float]](dstIds.length)
+            var j = 0
+            val equations = new ArrayBuffer[(Int, (Int, NormalEquation))]()
+            while (j < dstIds.length) {
+              val ls = new NormalEquation(rank)
+              if (implicitPrefs) {
+                ls.merge(YtY.get)
+              }
+              var i = srcPtrs(j)
+              var numExplicits = 0
+              while (i < srcPtrs(j + 1)) {
+                val encoded = srcEncodedIndices(i)
+                val blockId = srcEncoder.blockId(encoded)
+                val localIndex = srcEncoder.localIndex(encoded)
+                val srcFactor = sortedSrcFactors(blockId)(localIndex)
+                val rating = ratings(i)
+                if (implicitPrefs) {
+                  // Extension to the original paper to handle b < 0. confidence is a function of |b|
+                  // instead so that it is never negative. c1 is confidence - 1.0.
+                  val c1 = alpha * math.abs(rating)
+                  // For rating <= 0, the corresponding preference is 0. So the term below is only added
+                  // for rating > 0. Because YtY is already added, we need to adjust the scaling here.
+                  if (rating > 0) {
+                    numExplicits += 1
+                    ls.add(srcFactor, (c1 + 1.0) / c1, c1)
+                  }
+                } else {
+                  ls.add(srcFactor, rating)
+                  numExplicits += 1
+                }
+                i += 1
+              }
+              // Weight lambda by the number of explicit ratings based on the ALS-WR paper.
+              //dstFactors(j) = solver.solve(ls, numExplicits * regParam)
+              equations.append((j, (numExplicits, ls)))
+              j += 1
+            }
+            (dstIds.length, equations.toSeq)
+        }
+    }.reduce[RDD[(Int, (Int, Seq[(Int, (Int, NormalEquation))]))]] { (left, right) =>
+      (left join right).mapValues {
+        case ((leftIdsLength, leftEquations), (rightIdsLengths, rightEquations)) =>
+          val length = math.max(leftIdsLength, rightIdsLengths)
+          val eqnMap = mutable.HashMap(leftEquations: _*)
+          for ((srcId, (rightExplicits, rightEqn)) <- rightEquations) {
+            eqnMap.get(srcId) match {
+              case Some((leftExplicits, leftEqn)) => eqnMap.update(srcId, (leftExplicits + rightExplicits, leftEqn.merge(rightEqn)))
+              case None => eqnMap.update(srcId, (rightExplicits, rightEqn))
+            }
           }
-          // Weight lambda by the number of explicit ratings based on the ALS-WR paper.
+          (length, eqnMap.toSeq)
+      }
+    }.mapValues {
+      case (length, equations) =>
+        val dstFactors = new Array[Array[Float]](length)
+        for ((j, (numExplicits, ls)) <- equations) {
           dstFactors(j) = solver.solve(ls, numExplicits * regParam)
-          j += 1
         }
         dstFactors
     }

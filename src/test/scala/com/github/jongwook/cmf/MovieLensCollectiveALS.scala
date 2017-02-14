@@ -25,12 +25,14 @@ object MovieLensCollectiveALS extends CueSheet {{
       }
   }
 
-  val als = new CollectiveALS("userId", "movieId", "genreId")
+  //val als = new CollectiveALS("userId", "movieId", "genreId")
+  val als = new CollectiveALS("userId", "movieId")
     .setMaxIter(20)
     .setRegParam(0.01)
     .setRatingCol("rating")
 
-  val model = als.fit(("userId", "movieId") -> train, ("movieId", "genreId") -> genreData)
+  //val model = als.fit(("userId", "movieId") -> train, ("movieId", "genreId") -> genreData)
+  val model = als.fit(("userId", "movieId") -> train)
   val predicted = model.predict(test)
 
   val metrics = SparkRankingMetrics(predicted, test.toDF)
