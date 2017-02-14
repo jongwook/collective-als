@@ -96,7 +96,7 @@ class CollectiveALS(entities: String*) extends Serializable {
 
   def fit(datasets: ((String, String), Dataset[_])*): CollectiveALSModel = {
     datasets.foreach {
-      case (_, dataset) => transformSchema(dataset.schema)
+      case ((leftCol, rightCol), dataset) => transformSchema(dataset.schema, leftCol, rightCol)
     }
 
     val session = datasets.head._2.sparkSession
@@ -133,9 +133,9 @@ class CollectiveALS(entities: String*) extends Serializable {
     model.setPredictionCol(predictionCol)
   }
 
-  def transformSchema(schema: StructType): StructType = {
-    SchemaUtils.checkNumericType(schema, userCol)
-    SchemaUtils.checkNumericType(schema, itemCol)
+  def transformSchema(schema: StructType, leftCol: String, rightCol: String): StructType = {
+    SchemaUtils.checkNumericType(schema, leftCol)
+    SchemaUtils.checkNumericType(schema, rightCol)
     // rating will be cast to Float
     SchemaUtils.checkNumericType(schema, ratingCol)
     SchemaUtils.appendColumn(schema, predictionCol, FloatType)
@@ -147,7 +147,7 @@ object CollectiveALS {
 
   val logger = LoggerFactory.getLogger(this.getClass.getName.stripSuffix("$"))
 
-  case class Rating[@specialized(Int, Long) ID](user: ID, item: ID, rating: Float)
+  case class Rating[@specialized(Int, Long) ID](left: ID, right: ID, rating: Float)
 
   /** Trait for least squares solvers applied to the normal equation. */
   trait LeastSquaresNESolver extends Serializable {
@@ -363,23 +363,60 @@ object CollectiveALS {
             ((rightBlockId, leftBlockId), RatingBlock(rightIds, leftIds, localRatings))
         }
 
-        val (rightInBlocks, rightOutBlocks) = makeBlocks(rightEntity, blockRatings, rightPartitioner, leftPartitioner, intermediateRDDStorageLevel)
+        val (rightInBlocks, rightOutBlocks) = makeBlocks(rightEntity, swappedBlockRatings, rightPartitioner, leftPartitioner, intermediateRDDStorageLevel)
 
         rightOutBlocks.count()
 
-        (leftInBlocks -> leftOutBlocks, rightInBlocks -> rightOutBlocks)
+        (left -> (leftInBlocks, leftOutBlocks), right -> (rightInBlocks, rightOutBlocks))
     }
 
     val seedGen = new XORShiftRandom(seed)
 
-    val entityFactors = entityInOutBlocks.map {
-      case ((leftInBlocks, _), (rightInBlocks, _)) =>
-        val leftFactors = initialize(leftInBlocks, rank, seedGen.nextLong())
-        val rightFactors = initialize(rightInBlocks, rank, seedGen.nextLong())
-
-        (leftFactors, rightFactors)
+    // map: source entity number -> sequence of (dst entity, srcInBlocks, srcOutBlocks)
+    val groupedInOutBlocks: Map[Int, Seq[(Int, RDD[(Int, InBlock[ID])], RDD[(Int, OutBlock)])]] = entityInOutBlocks.flatMap {
+      case ((left, leftInOutBlocks), (right, rightInOutBlocks)) => Seq((left -> right, leftInOutBlocks), (right -> left, rightInOutBlocks))
+    }.groupBy {
+      case ((src, dst), _) => src
+    }.mapValues {
+      _.map {
+        case ((src, dst), (inBlocks, outBlocks)) => (dst, inBlocks, outBlocks)
+      }
     }
 
+    // map: destination entity number -> sequence of (src entity, srcInBlocks, srcOutBlocks)
+    val reverseGroupedInOutBlocks: Map[Int, Seq[(Int, RDD[(Int, InBlock[ID])], RDD[(Int, OutBlock)])]] =entityInOutBlocks.flatMap {
+      case ((left, leftInOutBlocks), (right, rightInOutBlocks)) => Seq((left -> right, leftInOutBlocks), (right -> left, rightInOutBlocks))
+    }.groupBy {
+      case ((src, dst), _) => dst
+    }.mapValues {
+      _.map {
+        case ((src, dst), (inBlocks, outBlocks)) => (src, inBlocks, outBlocks)
+      }
+    }
+
+    // map: entity number -> latent factors
+    val entityFactors: mutable.HashMap[Int, RDD[(Int, FactorBlock)]] = mutable.HashMap(groupedInOutBlocks.mapValues { seq =>
+      initialize(seq.head._2, rank, seedGen.nextLong())
+    }.toSeq: _*)
+
+    if (implicitPrefs) {
+      ???
+    } else {
+      for (iter <- 0 until maxIter) {
+        for (entity <- 0 until numEntities) {
+          val oldFactors = entityFactors(entity)
+          val encoder = indexEncoders(entity)
+          val srcOutBlockSeq = groupedInOutBlocks(entity).map {
+            case (dst, inBlocks, outBlocks) => (dst, outBlocks)
+          }.sortBy(_._1)
+          val dstInBlockSeq = reverseGroupedInOutBlocks(entity).map {
+            case (src, inBlocks, outBlocks) => (src, inBlocks)
+          }.sortBy(_._1)
+          val newFactors = computeFactors(oldFactors, srcOutBlockSeq, dstInBlockSeq, rank, regParam, encoder, solver = solver)
+          entityFactors.update(entity, newFactors)
+        }
+      }
+    }
 //
 //    if (implicitPrefs) {
 //      for (iter <- 1 to maxIter) {
@@ -542,8 +579,8 @@ object CollectiveALS {
     /** Adds a rating. */
     def add(r: Rating[ID]): this.type = {
       size += 1
-      srcIds += r.user
-      dstIds += r.item
+      srcIds += r.left
+      dstIds += r.right
       ratings += r.rating
       this
     }
@@ -590,8 +627,8 @@ object CollectiveALS {
     ratings.mapPartitions { iter =>
       val builders = Array.fill(numPartitions)(new RatingBlockBuilder[ID])
       iter.flatMap { r =>
-        val srcBlockId = srcPart.getPartition(r.user)
-        val dstBlockId = dstPart.getPartition(r.item)
+        val srcBlockId = srcPart.getPartition(r.left)
+        val dstBlockId = dstPart.getPartition(r.right)
         val idx = srcBlockId + srcPart.numPartitions * dstBlockId
         val builder = builders(idx)
         builder.add(r)
@@ -899,8 +936,8 @@ object CollectiveALS {
     * Compute dst factors by constructing and solving least square problems.
     *
     * @param srcFactorBlocks src factors
-    * @param srcOutBlocks src out-blocks
-    * @param dstInBlocks dst in-blocks
+    * @param srcOutBlockSeq src out-blocks
+    * @param dstInBlockSeq dst in-blocks
     * @param rank rank
     * @param regParam regularization constant
     * @param srcEncoder encoder for src local indices
@@ -911,8 +948,8 @@ object CollectiveALS {
     */
   private def computeFactors[ID](
     srcFactorBlocks: RDD[(Int, FactorBlock)],
-    srcOutBlocks: RDD[(Int, OutBlock)],
-    dstInBlocks: RDD[(Int, InBlock[ID])],
+    srcOutBlockSeq: Seq[(Int, RDD[(Int, OutBlock)])],
+    dstInBlockSeq: Seq[(Int, RDD[(Int, InBlock[ID])])],
     rank: Int,
     regParam: Double,
     srcEncoder: LocalIndexEncoder,
@@ -921,6 +958,10 @@ object CollectiveALS {
     solver: LeastSquaresNESolver): RDD[(Int, FactorBlock)] = {
     val numSrcBlocks = srcFactorBlocks.partitions.length
     val YtY = if (implicitPrefs) Some(computeYtY(srcFactorBlocks, rank)) else None
+
+    val srcOutBlocks = srcOutBlockSeq.head._2
+    val dstInBlocks = dstInBlockSeq.head._2
+
     val srcOut = srcOutBlocks.join(srcFactorBlocks).flatMap {
       case (srcBlockId, (srcOutBlock, srcFactors)) =>
         srcOutBlock.view.zipWithIndex.map { case (activeIndices, dstBlockId) =>

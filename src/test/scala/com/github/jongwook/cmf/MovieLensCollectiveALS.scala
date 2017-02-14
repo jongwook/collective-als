@@ -5,19 +5,32 @@ import com.kakao.cuesheet.CueSheet
 
 import scala.collection.mutable.ArrayBuffer
 
+case class MovieGenreMapping(movieId: Int, genreId: Int, rating: Float)
+
 object MovieLensCollectiveALS extends CueSheet {{
+  import spark.implicits._
+
   val data = MovieLens.load("ml-latest-small")
 
   val Seq(train, test) = Utils.splitChronologically(data.ratings, Seq(0.99, 0.01))
 
-  val als = new CollectiveALS("user", "item")
+  val allGenres = data.movies.flatMap(_.genres.split('|')).distinct().collect().sorted
+  val genreCode = allGenres.zipWithIndex.toMap
+
+  val genreData = data.movies.flatMap {
+    case MovieLensMovie(movieId, _, genres) =>
+      genres.split('|').map { genre =>
+        val genreId = genreCode(genre)
+        MovieGenreMapping(movieId, genreId, 1.0f)
+      }
+  }
+
+  val als = new CollectiveALS("userId", "movieId", "genreId")
     .setMaxIter(20)
     .setRegParam(0.01)
-    .setUserCol("userId")
-    .setItemCol("movieId")
     .setRatingCol("rating")
 
-  val model = als.fit(train)
+  val model = als.fit(("userId", "movieId") -> train, ("movieId", "genreId") -> genreData)
   val predicted = model.predict(test)
 
   val metrics = SparkRankingMetrics(predicted, test.toDF)
