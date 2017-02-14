@@ -13,7 +13,6 @@ import org.apache.spark.sql.types.{DoubleType, FloatType, StructType}
 import org.apache.spark.storage.StorageLevel
 import org.apache.spark.util.collection.OpenHashSet
 import org.apache.spark.{Dependency, Partitioner, ShuffleDependency, SparkContext}
-import org.apache.spark.SparkContext._
 import org.slf4j.LoggerFactory
 
 import scala.collection.mutable
@@ -345,7 +344,7 @@ object CollectiveALS {
     val solver = if (nonnegative) new NNLSSolver else new CholeskySolver
 
     /** length: numDataFrames */
-    val entityInOutBlocks = data.zipWithIndex.map {
+    val entityInOutBlocks = data.zipWithIndex.flatMap {
       case (((left, right), ratings), index) =>
         val blockRatings = partitionRatings(ratings, partitioners(left), partitioners(right)).persist(intermediateRDDStorageLevel)
 
@@ -367,15 +366,13 @@ object CollectiveALS {
 
         rightOutBlocks.count()
 
-        (left -> (leftInBlocks, leftOutBlocks), right -> (rightInBlocks, rightOutBlocks))
+        Seq((left, right) -> (leftInBlocks, leftOutBlocks), (right, left) -> (rightInBlocks, rightOutBlocks))
     }
 
     val seedGen = new XORShiftRandom(seed)
 
     // map: source entity number -> sequence of (dst entity, srcInBlocks, srcOutBlocks)
-    val groupedInOutBlocks: Map[Int, Seq[(Int, RDD[(Int, InBlock[ID])], RDD[(Int, OutBlock)])]] = entityInOutBlocks.flatMap {
-      case ((left, leftInOutBlocks), (right, rightInOutBlocks)) => Seq((left -> right, leftInOutBlocks), (right -> left, rightInOutBlocks))
-    }.groupBy {
+    val groupedInOutBlocks: Map[Int, Seq[(Int, RDD[(Int, InBlock[ID])], RDD[(Int, OutBlock)])]] = entityInOutBlocks.groupBy {
       case ((src, dst), _) => src
     }.mapValues {
       _.map {
@@ -384,9 +381,7 @@ object CollectiveALS {
     }
 
     // map: destination entity number -> sequence of (src entity, srcInBlocks, srcOutBlocks)
-    val reverseGroupedInOutBlocks: Map[Int, Seq[(Int, RDD[(Int, InBlock[ID])], RDD[(Int, OutBlock)])]] =entityInOutBlocks.flatMap {
-      case ((left, leftInOutBlocks), (right, rightInOutBlocks)) => Seq((left -> right, leftInOutBlocks), (right -> left, rightInOutBlocks))
-    }.groupBy {
+    val reverseGroupedInOutBlocks: Map[Int, Seq[(Int, RDD[(Int, InBlock[ID])], RDD[(Int, OutBlock)])]] = entityInOutBlocks.groupBy {
       case ((src, dst), _) => dst
     }.mapValues {
       _.map {
@@ -399,24 +394,19 @@ object CollectiveALS {
       initialize(seq.head._2, rank, seedGen.nextLong())
     }.toSeq: _*)
 
-    if (implicitPrefs) {
-      ???
-    } else {
-      for (iter <- 0 until maxIter) {
-        for (entity <- 0 until numEntities) {
-          val oldFactors = entityFactors(entity)
-          val encoder = indexEncoders(entity)
-          val srcOutBlockSeq = groupedInOutBlocks(entity).map {
-            case (dst, inBlocks, outBlocks) => (dst, outBlocks)
-          }.sortBy(_._1)
-          val dstInBlockSeq = reverseGroupedInOutBlocks(entity).map {
-            case (src, inBlocks, outBlocks) => (src, inBlocks)
-          }.sortBy(_._1)
-          assert(srcOutBlockSeq.map(_._1) == dstInBlockSeq.map(_._1))
-          val srcFactors = srcOutBlockSeq.map { case (src, _) => entityFactors(src) }
-          val newFactors = computeFactors(srcFactors, srcOutBlockSeq, dstInBlockSeq, rank, regParam, encoder, solver = solver)
-          entityFactors.update(entity, newFactors)
-        }
+    for (iter <- 0 until maxIter) {
+      for (entity <- 0 until numEntities) {
+        val encoder = indexEncoders(entity)
+        val srcOutBlockSeq = groupedInOutBlocks(entity).map {
+          case (dst, inBlocks, outBlocks) => (dst, outBlocks)
+        }.sortBy(_._1)
+        val dstInBlockSeq = reverseGroupedInOutBlocks(entity).map {
+          case (src, inBlocks, outBlocks) => (src, inBlocks)
+        }.sortBy(_._1)
+        assert(srcOutBlockSeq.map(_._1) == dstInBlockSeq.map(_._1))
+        val srcFactors = srcOutBlockSeq.map { case (src, _) => entityFactors(src) }
+        val newFactors = computeFactors(srcFactors, srcOutBlockSeq, dstInBlockSeq, rank, regParam, encoder, implicitPrefs, alpha, solver)
+        entityFactors.update(entity, newFactors)
       }
     }
 

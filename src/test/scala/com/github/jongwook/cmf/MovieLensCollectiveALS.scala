@@ -25,8 +25,8 @@ object MovieLensCollectiveALS extends CueSheet {{
       }
   }
 
-  //val als = new CollectiveALS("userId", "movieId", "genreId")
   val als = new CollectiveALS("userId", "movieId")
+  //val als = new CollectiveALS("userId", "movieId", "genreId")
     .setMaxIter(20)
     .setRegParam(0.01)
     .setRatingCol("rating")
