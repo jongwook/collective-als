@@ -118,11 +118,8 @@ class CollectiveALS(entities: String*) extends Serializable {
 
         (left, right) -> ratings
     }
-    //val instrLog = Instrumentation.create(this, ratings)
-    //instrLog.logParams(rank, numUserBlocks, numItemBlocks, implicitPrefs, alpha,
-    //  userCol, itemCol, ratingCol, predictionCol, maxIter,
-    //  regParam, nonnegative, checkpointInterval, seed)
-    val factors: Seq[RDD[(Int, Array[Float])]] = CollectiveALS.train(data, rank = rank,
+
+    val factors: Seq[RDD[(Int, Array[Float])]] = CollectiveALS.train(data, entities, rank = rank,
       numBlocks = numBlocks, maxIter = maxIter, regParam = regParam, implicitPrefs = implicitPrefs,
       alpha = alpha, nonnegative = nonnegative,
       intermediateRDDStorageLevel = StorageLevel.fromString(intermediateStorageLevel),
@@ -130,7 +127,7 @@ class CollectiveALS(entities: String*) extends Serializable {
       checkpointInterval = checkpointInterval, seed = seed)
 
     val dataFrames = factors.map(_.toDF("id", "features"))
-    val model = new CollectiveALSModel(rank, userDF, itemDF)
+    val model = new CollectiveALSModel(rank, dataFrames: _*)
     //instrLog.logSuccess(model)
     model.setEntityCols(cols)
     model.setPredictionCol(predictionCol)
@@ -323,7 +320,7 @@ object CollectiveALS {
     finalRDDStorageLevel: StorageLevel = StorageLevel.MEMORY_AND_DISK,
     checkpointInterval: Int = 10,
     seed: Long = 0L)(
-    implicit ord: Ordering[ID]): (RDD[(ID, Array[Float])], RDD[(ID, Array[Float])]) = {
+    implicit ord: Ordering[ID]): Seq[RDD[(ID, Array[Float])]] = {
 
     require(intermediateRDDStorageLevel != StorageLevel.NONE,
       "ALS is not designed to run without persisting intermediate RDDs.")
@@ -383,65 +380,66 @@ object CollectiveALS {
         (leftFactors, rightFactors)
     }
 
-
-    if (implicitPrefs) {
-      for (iter <- 1 to maxIter) {
-        userFactors.setName(s"userFactors-$iter").persist(intermediateRDDStorageLevel)
-        val previousItemFactors = itemFactors
-        itemFactors = computeFactors(userFactors, userOutBlocks, itemInBlocks, rank, regParam,
-          userLocalIndexEncoder, implicitPrefs, alpha, solver)
-        previousItemFactors.unpersist()
-        itemFactors.setName(s"itemFactors-$iter").persist(intermediateRDDStorageLevel)
-        // TODO: Generalize PeriodicGraphCheckpointer and use it here.
-        val deps = itemFactors.dependencies
-        val previousUserFactors = userFactors
-        userFactors = computeFactors(itemFactors, itemOutBlocks, userInBlocks, rank, regParam,
-          itemLocalIndexEncoder, implicitPrefs, alpha, solver)
-        previousUserFactors.unpersist()
-      }
-    } else {
-      for (iter <- 0 until maxIter) {
-        itemFactors = computeFactors(userFactors, userOutBlocks, itemInBlocks, rank, regParam,
-          userLocalIndexEncoder, solver = solver)
-        userFactors = computeFactors(itemFactors, itemOutBlocks, userInBlocks, rank, regParam,
-          itemLocalIndexEncoder, solver = solver)
-      }
-    }
-
-
-    val userIdAndFactors = userInBlocks
-      .mapValues(_.srcIds)
-      .join(userFactors)
-      .mapPartitions({ items =>
-        items.flatMap { case (_, (ids, factors)) =>
-          ids.view.zip(factors)
-        }
-        // Preserve the partitioning because IDs are consistent with the partitioners in userInBlocks
-        // and userFactors.
-      }, preservesPartitioning = true)
-      .setName("userFactors")
-      .persist(finalRDDStorageLevel)
-    val itemIdAndFactors = itemInBlocks
-      .mapValues(_.srcIds)
-      .join(itemFactors)
-      .mapPartitions({ items =>
-        items.flatMap { case (_, (ids, factors)) =>
-          ids.view.zip(factors)
-        }
-      }, preservesPartitioning = true)
-      .setName("itemFactors")
-      .persist(finalRDDStorageLevel)
-    if (finalRDDStorageLevel != StorageLevel.NONE) {
-      userIdAndFactors.count()
-      itemFactors.unpersist()
-      itemIdAndFactors.count()
-      userInBlocks.unpersist()
-      userOutBlocks.unpersist()
-      itemInBlocks.unpersist()
-      itemOutBlocks.unpersist()
-      blockRatings.unpersist()
-    }
-    (userIdAndFactors, itemIdAndFactors)
+//
+//    if (implicitPrefs) {
+//      for (iter <- 1 to maxIter) {
+//        userFactors.setName(s"userFactors-$iter").persist(intermediateRDDStorageLevel)
+//        val previousItemFactors = itemFactors
+//        itemFactors = computeFactors(userFactors, userOutBlocks, itemInBlocks, rank, regParam,
+//          userLocalIndexEncoder, implicitPrefs, alpha, solver)
+//        previousItemFactors.unpersist()
+//        itemFactors.setName(s"itemFactors-$iter").persist(intermediateRDDStorageLevel)
+//        // TODO: Generalize PeriodicGraphCheckpointer and use it here.
+//        val deps = itemFactors.dependencies
+//        val previousUserFactors = userFactors
+//        userFactors = computeFactors(itemFactors, itemOutBlocks, userInBlocks, rank, regParam,
+//          itemLocalIndexEncoder, implicitPrefs, alpha, solver)
+//        previousUserFactors.unpersist()
+//      }
+//    } else {
+//      for (iter <- 0 until maxIter) {
+//        itemFactors = computeFactors(userFactors, userOutBlocks, itemInBlocks, rank, regParam,
+//          userLocalIndexEncoder, solver = solver)
+//        userFactors = computeFactors(itemFactors, itemOutBlocks, userInBlocks, rank, regParam,
+//          itemLocalIndexEncoder, solver = solver)
+//      }
+//    }
+//
+//
+//    val userIdAndFactors = userInBlocks
+//      .mapValues(_.srcIds)
+//      .join(userFactors)
+//      .mapPartitions({ items =>
+//        items.flatMap { case (_, (ids, factors)) =>
+//          ids.view.zip(factors)
+//        }
+//        // Preserve the partitioning because IDs are consistent with the partitioners in userInBlocks
+//        // and userFactors.
+//      }, preservesPartitioning = true)
+//      .setName("userFactors")
+//      .persist(finalRDDStorageLevel)
+//    val itemIdAndFactors = itemInBlocks
+//      .mapValues(_.srcIds)
+//      .join(itemFactors)
+//      .mapPartitions({ items =>
+//        items.flatMap { case (_, (ids, factors)) =>
+//          ids.view.zip(factors)
+//        }
+//      }, preservesPartitioning = true)
+//      .setName("itemFactors")
+//      .persist(finalRDDStorageLevel)
+//    if (finalRDDStorageLevel != StorageLevel.NONE) {
+//      userIdAndFactors.count()
+//      itemFactors.unpersist()
+//      itemIdAndFactors.count()
+//      userInBlocks.unpersist()
+//      userOutBlocks.unpersist()
+//      itemInBlocks.unpersist()
+//      itemOutBlocks.unpersist()
+//      blockRatings.unpersist()
+//    }
+//    (userIdAndFactors, itemIdAndFactors)
+    ???
   }
 
   /**

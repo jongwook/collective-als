@@ -1,19 +1,18 @@
 package com.github.jongwook.cmf
 
 import com.github.jongwook.SparkRankingMetrics
-import org.apache.spark.sql.SparkSession
+import com.kakao.cuesheet.CueSheet
+import org.apache.spark.ml.recommendation.ALS
 
 import scala.collection.mutable.ArrayBuffer
 
-object CollectiveALSTest extends App {{
-  implicit val spark = SparkSession.builder().master("local[8]").getOrCreate()
-  implicit val sc = spark.sparkContext
+object MovieLensALS extends CueSheet {{
 
   val data = MovieLens.load("src/test/resources/ml-latest-small")
 
   val Seq(train, test) = Utils.splitChronologically(data.ratings, Seq(0.99, 0.01))
 
-  val als = new CollectiveALS("user", "item")
+  val als = new ALS()
     .setMaxIter(20)
     .setRegParam(0.01)
     .setUserCol("userId")
@@ -21,7 +20,7 @@ object CollectiveALSTest extends App {{
     .setRatingCol("rating")
 
   val model = als.fit(train)
-  val predicted = model.predict(test)
+  val predicted = model.transform(test)
 
   val metrics = SparkRankingMetrics(predicted, test.toDF)
   metrics.setUserCol("userId")
