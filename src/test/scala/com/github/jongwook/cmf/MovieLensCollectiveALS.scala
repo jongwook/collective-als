@@ -1,9 +1,8 @@
 package com.github.jongwook.cmf
 
-import com.github.jongwook.SparkRankingMetrics
 import com.kakao.cuesheet.CueSheet
-
-import scala.collection.mutable.ArrayBuffer
+import org.apache.spark.mllib.evaluation.RegressionMetrics
+import org.apache.spark.rdd.RDD
 
 case class MovieGenreMapping(movieId: Int, genreId: Int, rating: Float)
 
@@ -27,7 +26,7 @@ object MovieLensCollectiveALS extends CueSheet {{
 
   //val als = new CollectiveALS("userId", "movieId")
   val als = new CollectiveALS("userId", "movieId", "genreId")
-    .setMaxIter(0)
+    .setMaxIter(20)
     .setRegParam(0.01)
     .setRatingCol("rating")
 
@@ -35,31 +34,18 @@ object MovieLensCollectiveALS extends CueSheet {{
   //val model = als.fit(("userId", "movieId") -> train)
   val predicted = model.predict(test)
 
-  val metrics = SparkRankingMetrics(predicted, test.toDF)
-  metrics.setUserCol("userId")
-  metrics.setItemCol("movieId")
-  metrics.setRatingCol("rating")
-  metrics.setPredictionCol("prediction")
+  val predictedRDD: RDD[((Int, Int), Double)] = predicted.map {
+    row => ((row.getAs[Int]("userId"), row.getAs[Int]("movieId")), row.getAs[Float]("prediction").toDouble)
+  }.rdd
 
+  val testRDD: RDD[((Int, Int), Double)] = test.map {
+    case MovieLensRating(userId, movieId, rating, _) => ((userId, movieId), rating.toDouble)
+  }.rdd
 
-  val methods = Map[String, SparkRankingMetrics => Seq[Int] => Seq[Double]](
-    "Precision" -> { m => m.precisionAt },
-    "Recall" -> { m => m.recallAt },
-    "F1" -> { m => m.f1At },
-    "NDCG" -> { m => m.ndcgAt },
-    "MAP" -> { m => m.mapAt }
-  )
+  val pairs = predictedRDD.join(testRDD).values
+  val validPairs = pairs.filter { case (a, b) => !a.isNaN && !b.isNaN }
 
-  val ats = Seq(5, 10, 20, 50, 100)
-  val lines = ArrayBuffer[String]()
-  lines += "|            |         @5 |       @10 |       @20 |       @50 |      @100 |"
-  for ((metric, method) <- methods) {
-    val header = "| %10s | ".format(metric)
-    val fields = for (value <- method(metrics)(ats)) yield {
-      "%10.6f |".format(value)
-    }
-    lines += (header +: fields).mkString
-  }
+  val metrics = new RegressionMetrics(validPairs, false)
 
-  println(lines.mkString("\n"))
+  println(f"RMSE = ${metrics.rootMeanSquaredError}%8f   MAE = ${metrics.meanAbsoluteError}%8f")
 }}

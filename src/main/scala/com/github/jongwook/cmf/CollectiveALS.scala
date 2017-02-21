@@ -355,6 +355,7 @@ object CollectiveALS {
         val rightPartitioner = partitioners(right)
 
         val (leftInBlocks, leftOutBlocks) = makeBlocks(leftEntity, blockRatings, leftPartitioner, rightPartitioner, intermediateRDDStorageLevel)
+        leftInBlocks.count()
         leftOutBlocks.count()
 
         val swappedBlockRatings = blockRatings.map {
@@ -364,6 +365,7 @@ object CollectiveALS {
 
         val (rightInBlocks, rightOutBlocks) = makeBlocks(rightEntity, swappedBlockRatings, rightPartitioner, leftPartitioner, intermediateRDDStorageLevel)
 
+        rightInBlocks.count()
         rightOutBlocks.count()
 
         Seq((left, right) -> (leftInBlocks, leftOutBlocks), (right, left) -> (rightInBlocks, rightOutBlocks))
@@ -416,6 +418,8 @@ object CollectiveALS {
         assert(srcOutBlockSeq.map(_._1) == dstInBlockSeq.map(_._1))
         val srcFactorSeq = reverseGroupedInOutBlocks(entity).map { case (src, inBlock, _) => (entityFactors(src), inBlock) }
         val newFactors = computeFactors(srcFactorSeq, srcOutBlockSeq, dstInBlockSeq, rank, regParam, encoder, implicitPrefs, alpha, solver)
+        newFactors.localCheckpoint()
+        newFactors.count()
         entityFactors.update(entity, newFactors)
       }
     }
@@ -967,12 +971,12 @@ object CollectiveALS {
       case (((src, srcOutBlocks), (dst, dstInBlocks)), (srcFactorRDD, srcInBlocks)) =>
         val numSrcBlocks = srcFactorRDD.partitions.length
 
-        val a = srcFactorRDD.keys.collect()
-        println(s"srcFactorRDD contains 67: ${a.contains(67)}, size ${a.size}")
-        val b = srcInBlocks.values.flatMap(_.srcIds).collect()
-        println(s"srcInBlocks contains 67: ${b.contains(67)}, size ${b.size}")
-        val c = dstInBlocks.values.flatMap(_.srcIds).collect()
-        println(s"dstInBlocks contains 67: ${c.contains(67)}, size ${c.size}")
+//        val a = srcFactorRDD.keys.collect()
+//        println(s"srcFactorRDD contains 67: ${a.contains(67)}, size ${a.size}")
+//        val b = srcInBlocks.values.flatMap(_.srcIds).collect()
+//        println(s"srcInBlocks contains 67: ${b.contains(67)}, size ${b.size}")
+//        val c = dstInBlocks.values.flatMap(_.srcIds).collect()
+//        println(s"dstInBlocks contains 67: ${c.contains(67)}, size ${c.size}")
 
         val srcFactorBlock = makeFactorBlocks(srcFactorRDD, srcInBlocks)
 
