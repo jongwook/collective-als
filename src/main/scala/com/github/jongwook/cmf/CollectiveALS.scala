@@ -389,51 +389,52 @@ object CollectiveALS {
       }
     }
 
-    // map: entity number -> latent factors
-    val entityFactors: mutable.HashMap[Int, RDD[(Int, FactorBlock)]] = mutable.HashMap(groupedInOutBlocks.mapValues { seq =>
-      initialize(seq.head._2, rank, seedGen.nextLong())
-    }.toSeq: _*)
+    val entitySets = groupedInOutBlocks.mapValues { seq =>
+      sc.union(seq.map {
+        case (dst, inBlocks, outBlocks) =>
+          inBlocks.flatMap {
+            case (srcBlockId, inBlock) =>
+              inBlock.srcIds
+          }
+      }).distinct()
+    }
+
+    // map: entity number -> RDD[ entity id -> latent factors ]
+    val entityFactors: mutable.HashMap[Int, RDD[(ID, Factor)]] = mutable.HashMap((0 until numEntities).map { entity =>
+      entity -> initialize(entitySets(entity), rank, seedGen.nextLong())
+    }: _*)
 
     for (iter <- 0 until maxIter) {
       for (entity <- 0 until numEntities) {
         val encoder = indexEncoders(entity)
-        val srcOutBlockSeq = groupedInOutBlocks(entity).map {
-          case (dst, inBlocks, outBlocks) => (dst, outBlocks)
+        val srcOutBlockSeq = reverseGroupedInOutBlocks(entity).map {
+          case (src, inBlocks, outBlocks) => (src, outBlocks)
         }.sortBy(_._1)
-        val dstInBlockSeq = reverseGroupedInOutBlocks(entity).map {
-          case (src, inBlocks, outBlocks) => (src, inBlocks)
+        val dstInBlockSeq = groupedInOutBlocks(entity).map {
+          case (dst, inBlocks, outBlocks) => (dst, inBlocks)
         }.sortBy(_._1)
         assert(srcOutBlockSeq.map(_._1) == dstInBlockSeq.map(_._1))
-        val srcFactors = srcOutBlockSeq.map { case (src, _) => entityFactors(src) }
-        val newFactors = computeFactors(srcFactors, srcOutBlockSeq, dstInBlockSeq, rank, regParam, encoder, implicitPrefs, alpha, solver)
+        val srcFactorSeq = reverseGroupedInOutBlocks(entity).map { case (src, inBlock, _) => (entityFactors(src), inBlock) }
+        val newFactors = computeFactors(srcFactorSeq, srcOutBlockSeq, dstInBlockSeq, rank, regParam, encoder, implicitPrefs, alpha, solver)
         entityFactors.update(entity, newFactors)
       }
     }
 
-    val entityIdAndFactors = groupedInOutBlocks.toSeq.sortBy(_._1).map {
-      case (entity, blocks) =>
-        blocks.head._2.mapValues(_.srcIds)
-          .join(entityFactors(entity))
-          .mapPartitions({ items =>
-            items.flatMap { case (_, (ids, factors)) =>
-              ids.view.zip(factors)
-            }
-          }, preservesPartitioning = true)
+    val entityIdAndFactors = (0 until numEntities).map { entity =>
+      entityFactors(entity)
           .setName(s"${entities(entity)}Factors")
           .persist(finalRDDStorageLevel)
     }
-
-    if (finalRDDStorageLevel != StorageLevel.NONE) {
-      entityIdAndFactors.foreach(_.count())
-      entityFactors.values.foreach(_.unpersist())
-      entityInOutBlocks.foreach {
-        case ((left, (leftInBlock, leftOutBlock)), (right, (rightInBlock, rightOutBlock))) =>
-          leftInBlock.unpersist()
-          leftOutBlock.unpersist()
-          rightInBlock.unpersist()
-          rightOutBlock.unpersist()
-      }
-    }
+//
+//    if (finalRDDStorageLevel != StorageLevel.NONE) {
+//      entityIdAndFactors.foreach(_.count())
+//      entityFactors.values.foreach(_.unpersist())
+//      entityInOutBlocks.foreach {
+//        case (_, (inBlock, outBlock)) =>
+//          inBlock.unpersist()
+//          outBlock.unpersist()
+//      }
+//    }
 
     entityIdAndFactors
 
@@ -462,6 +463,11 @@ object CollectiveALS {
 //      }
 //    }
   }
+
+  /**
+    * Factor block that stores factors (Array[Float]) for each entity as a record in RDD
+    */
+  private type Factor = Array[Float]
 
   /**
     * Factor block that stores factors (Array[Float]) in an Array.
@@ -511,28 +517,42 @@ object CollectiveALS {
   /**
     * Initializes factors randomly given the in-link blocks.
     *
-    * @param inBlocks in-link blocks
+    * @param ids entity ids
     * @param rank rank
     * @return initialized factor blocks
     */
   private def initialize[ID](
-    inBlocks: RDD[(Int, InBlock[ID])],
+    ids: RDD[ID],
     rank: Int,
-    seed: Long): RDD[(Int, FactorBlock)] = {
+    seed: Long): RDD[(ID, Factor)] = {
     // Choose a unit vector uniformly at random from the unit sphere, but from the
     // "first quadrant" where all elements are nonnegative. This can be done by choosing
     // elements distributed as Normal(0,1) and taking the absolute value, and then normalizing.
     // This appears to create factorizations that have a slightly better reconstruction
     // (<1%) compared picking elements uniformly at random in [0,1].
-    inBlocks.map { case (srcBlockId, inBlock) =>
-      val random = new XORShiftRandom(byteswap64(seed ^ srcBlockId))
-      val factors = Array.fill(inBlock.srcIds.length) {
-        val factor = Array.fill(rank)(random.nextGaussian().toFloat)
-        val nrm = blas.snrm2(rank, factor, 1)
-        blas.sscal(rank, 1.0f / nrm, factor, 1)
-        factor
-      }
-      (srcBlockId, factors)
+    ids.map { id =>
+      val random = new XORShiftRandom(byteswap64(seed))
+      val factor = Array.fill(rank)(random.nextGaussian().toFloat)
+      val nrm = blas.snrm2(rank, factor, 1)
+      blas.sscal(rank, 1.0f / nrm, factor, 1)
+      (id, factor)
+    }
+  }
+
+  private def makeFactorBlocks[ID](factors: RDD[(ID, Factor)], inBlocks: RDD[(Int, InBlock[ID])]): RDD[(Int, FactorBlock)] = {
+    val numPartitions = inBlocks.getNumPartitions
+    factors.map {
+      case (id, factor) => ((id.asInstanceOf[Number].longValue() % numPartitions).toInt, (id, factor))
+    }.groupByKey().mapValues {
+      factors => factors.toMap
+    }.join(inBlocks).mapValues[FactorBlock] {
+      case (factorMap, InBlock(srcIds, _, _, _)) => srcIds.map(factorMap.apply)
+    }
+  }
+
+  private def explodeFactorBlocks[ID](blocks: RDD[(Int, FactorBlock)], inBlocks: RDD[(Int, InBlock[ID])]): RDD[(ID, Factor)] = {
+    blocks.join(inBlocks).flatMap {
+      case (blockId, (factorBlock, InBlock(srcIds, _, _, _))) => srcIds.zip(factorBlock)
     }
   }
 
@@ -919,7 +939,7 @@ object CollectiveALS {
   /**
     * Compute dst factors by constructing and solving least square problems.
     *
-    * @param srcFactorBlockSeq src factors
+    * @param srcFactorSeq src factors
     * @param srcOutBlockSeq src out-blocks
     * @param dstInBlockSeq dst in-blocks
     * @param rank rank
@@ -930,8 +950,8 @@ object CollectiveALS {
     * @param solver solver for least squares problems
     * @return dst factors
     */
-  private def computeFactors[ID](
-    srcFactorBlockSeq: Seq[RDD[(Int, FactorBlock)]],
+  private def computeFactors[ID: ClassTag](
+    srcFactorSeq: Seq[(RDD[(ID, Factor)], RDD[(Int, InBlock[ID])])],
     srcOutBlockSeq: Seq[(Int, RDD[(Int, OutBlock)])],
     dstInBlockSeq: Seq[(Int, RDD[(Int, InBlock[ID])])],
     rank: Int,
@@ -939,29 +959,41 @@ object CollectiveALS {
     srcEncoder: LocalIndexEncoder,
     implicitPrefs: Boolean = false,
     alpha: Double = 1.0,
-    solver: LeastSquaresNESolver): RDD[(Int, FactorBlock)] = {
+    solver: LeastSquaresNESolver): RDD[(ID, Factor)] = {
 
-    (srcOutBlockSeq zip dstInBlockSeq zip srcFactorBlockSeq).map {
-      case (((src, srcOutBlocks), (dst, dstInBlocks)), srcFactorBlocks) =>
-        val numSrcBlocks = srcFactorBlocks.partitions.length
-        val YtY = if (implicitPrefs) Some(computeYtY(srcFactorBlocks, rank)) else None
+    import org.apache.spark.SparkContext._
 
-        val srcOut = srcOutBlocks.join(srcFactorBlocks).flatMap {
+    (srcOutBlockSeq zip dstInBlockSeq zip srcFactorSeq).map {
+      case (((src, srcOutBlocks), (dst, dstInBlocks)), (srcFactorRDD, srcInBlocks)) =>
+        val numSrcBlocks = srcFactorRDD.partitions.length
+
+        val a = srcFactorRDD.keys.collect()
+        println(s"srcFactorRDD contains 67: ${a.contains(67)}, size ${a.size}")
+        val b = srcInBlocks.values.flatMap(_.srcIds).collect()
+        println(s"srcInBlocks contains 67: ${b.contains(67)}, size ${b.size}")
+        val c = dstInBlocks.values.flatMap(_.srcIds).collect()
+        println(s"dstInBlocks contains 67: ${c.contains(67)}, size ${c.size}")
+
+        val srcFactorBlock = makeFactorBlocks(srcFactorRDD, srcInBlocks)
+
+        val YtY = if (implicitPrefs) Some(computeYtY(srcFactorBlock, rank)) else None
+
+        val srcOut = srcOutBlocks.join(srcFactorBlock).flatMap {
           case (srcBlockId, (srcOutBlock, srcFactors)) =>
             srcOutBlock.view.zipWithIndex.map { case (activeIndices, dstBlockId) =>
               (dstBlockId, (srcBlockId, activeIndices.map(idx => srcFactors(idx))))
             }
         }
         val merged = srcOut.groupByKey(new ALSPartitioner(dstInBlocks.partitions.length))
-        dstInBlocks.join(merged).mapValues {
-          case (InBlock(dstIds, srcPtrs, srcEncodedIndices, ratings), srcFactors) =>
+        dstInBlocks.join(merged).flatMap {
+          case (_, (InBlock(dstIds, srcPtrs, srcEncodedIndices, ratings), srcFactors)) =>
             val sortedSrcFactors = new Array[FactorBlock](numSrcBlocks)
             srcFactors.foreach { case (srcBlockId, factors) =>
               sortedSrcFactors(srcBlockId) = factors
             }
             //val dstFactors = new Array[Array[Float]](dstIds.length)
             var j = 0
-            val equations = new ArrayBuffer[(Int, (Int, NormalEquation))]()
+            val equations = new ArrayBuffer[(ID, (Int, NormalEquation))]()
             while (j < dstIds.length) {
               val ls = new NormalEquation(rank)
               if (implicitPrefs) {
@@ -993,31 +1025,25 @@ object CollectiveALS {
               }
               // Weight lambda by the number of explicit ratings based on the ALS-WR paper.
               //dstFactors(j) = solver.solve(ls, numExplicits * regParam)
-              equations.append((j, (numExplicits, ls)))
+              equations.append((dstIds(j), (numExplicits, ls)))
               j += 1
             }
-            (dstIds.length, equations.toSeq)
+            equations
         }
-    }.reduce[RDD[(Int, (Int, Seq[(Int, (Int, NormalEquation))]))]] { (left, right) =>
-      (left join right).mapValues {
-        case ((leftIdsLength, leftEquations), (rightIdsLengths, rightEquations)) =>
-          val length = math.max(leftIdsLength, rightIdsLengths)
-          val eqnMap = mutable.HashMap(leftEquations: _*)
-          for ((srcId, (rightExplicits, rightEqn)) <- rightEquations) {
-            eqnMap.get(srcId) match {
-              case Some((leftExplicits, leftEqn)) => eqnMap.update(srcId, (leftExplicits + rightExplicits, leftEqn.merge(rightEqn)))
-              case None => eqnMap.update(srcId, (rightExplicits, rightEqn))
-            }
-          }
-          (length, eqnMap.toSeq)
+    }.reduce[RDD[(ID, (Int, NormalEquation))]] { (left, right) =>
+      left.fullOuterJoin(right).mapValues {
+        case (Some((leftExplicits, leftEquation)), Some((rightExplicits, rightEquation))) =>
+          (leftExplicits + rightExplicits, leftEquation.merge(rightEquation))
+        case (Some((leftExplicits, leftEquation)), None) =>
+          (leftExplicits, leftEquation)
+        case (None, Some((rightExplicits, rightEquation))) =>
+          (rightExplicits, rightEquation)
+        case (None, None) =>
+          throw new RuntimeException("fullOuterJoin should not produce (None, None)")
       }
     }.mapValues {
-      case (length, equations) =>
-        val dstFactors = new Array[Array[Float]](length)
-        for ((j, (numExplicits, ls)) <- equations) {
-          dstFactors(j) = solver.solve(ls, numExplicits * regParam)
-        }
-        dstFactors
+      case (numExplicits, equation) =>
+        solver.solve(equation, numExplicits * regParam)
     }
   }
 
