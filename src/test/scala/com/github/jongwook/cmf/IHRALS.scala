@@ -5,9 +5,18 @@ import java.util.Date
 import com.github.jongwook.SparkRankingMetrics
 import com.kakao.cuesheet.CueSheet
 
+import scala.collection.JavaConversions._
 import scala.collection.mutable.ArrayBuffer
 
-object IHRCollectiveALS extends CueSheet {{
+
+
+object IHRALS extends CueSheet({
+  val conf = new org.apache.hadoop.conf.Configuration(false)
+  conf.addResource(Thread.currentThread().getContextClassLoader.getResourceAsStream("dumbo/hive-site.xml"))
+  conf.iterator().toSeq.map {
+    e => ("spark.hadoop." + e.getKey, e.getValue)
+  }
+}: _*) {{
 
   logger.warn(s"Hive Metastore: ${spark.sqlContext.sparkContext.hadoopConfiguration.get("hive.metastore.uris")}")
 
@@ -17,22 +26,18 @@ object IHRCollectiveALS extends CueSheet {{
 
   spark.sqlContext.sql("use jongwook")
 
-  val liveThumbs = spark.table("fct_live_thumbs").repartition(2000).map {
+  val liveThumbs = spark.sqlContext.table("fct_live_thumbs").repartition(2000).map {
     row => LiveThumb(row.getAs[Int]("profile_id"), row.getAs[Int]("content_id"), row.getAs[String]("type").toFloat * 2 - 1, row.getAs[Date]("create_dt").getTime)
   }.cache()
 
   val Seq(train, test) = Utils.splitChronologically(liveThumbs, Seq(0.99, 0.01))
 
-  val dimTrack = spark.table("dim_track").repartition(2000).map {
-    row => DimTrack(row.getAs[Int]("product_id"), row.getAs[Int]("artist_id"), 1.0f)
-  }.cache()
-
-  val als = new CollectiveALS("profile_id", "content_id", "artist_id")
-    .setMaxIter(20)
+  val als = new CollectiveALS("profile_id", "content_id")
+    .setMaxIter(100)
     .setRegParam(0.01)
     .setRatingCol("thumb")
 
-  val model = als.fit(("profile_id", "content_id") -> train, ("content_id", "artist_id") -> dimTrack)
+  val model = als.fit(("profile_id", "content_id") -> train)
   val predicted = model.predict(test)
 
   val metrics = SparkRankingMetrics(predicted, test.toDF)
