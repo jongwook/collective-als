@@ -33,7 +33,7 @@ object IHRCollectiveALS extends CueSheet({
   val Seq(train, test) = Utils.splitChronologically(liveThumbs, Seq(0.99, 0.01))
 
   val als = new CollectiveALS("profile_id", "content_id")
-    .setMaxIter(20)
+    .setMaxIter(100)
     .setRegParam(0.01)
     .setRatingCol("thumb")
 
