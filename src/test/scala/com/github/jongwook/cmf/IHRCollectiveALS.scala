@@ -4,11 +4,32 @@ import java.util.Date
 
 import com.github.jongwook.SparkRankingMetrics
 import com.kakao.cuesheet.CueSheet
+import org.apache.hadoop.fs.{FileSystem, Path}
 
+import scala.collection.JavaConversions._
 import scala.collection.mutable.ArrayBuffer
 
-object IHRCollectiveALS extends CueSheet {{
+case class IHRCollectiveALSConfig(regParam: Double = 0.01, maxIter: Int = 10)
 
+
+
+object IHRCollectiveALS extends CueSheet({
+  val conf = new org.apache.hadoop.conf.Configuration(false)
+  conf.addResource(Thread.currentThread().getContextClassLoader.getResourceAsStream("dumbo/hive-site.xml"))
+  conf.iterator().toSeq.map {
+    e => ("spark.hadoop." + e.getKey, e.getValue)
+  }
+}: _*) {{
+
+  val parser = new scopt.OptionParser[IHRCollectiveALSConfig]("IHRCollectiveALS") {
+    head("IHRCollectiveALS")
+    opt[Double]('r', "reg-param").action( (r, c) => c.copy(regParam = r) ).text("regularization parameter")
+    opt[Int]('i', "max-iter").action( (i, c) => c.copy(maxIter = i) ).text("max iterations")
+  }
+
+  val config = parser.parse(args, IHRCollectiveALSConfig()).get
+
+  System.setProperty("scopt.config", config.toString)
   logger.warn(s"Hive Metastore: ${spark.sqlContext.sparkContext.hadoopConfiguration.get("hive.metastore.uris")}")
 
   import spark.implicits._
@@ -25,11 +46,15 @@ object IHRCollectiveALS extends CueSheet {{
 
   val dimTrack = spark.table("dim_track").repartition(2000).map {
     row => DimTrack(row.getAs[Int]("product_id"), row.getAs[Int]("artist_id"), 1.0f)
+  }.filter {
+    row => row.artist_id != -1 && row.content_id != -1
   }.cache()
 
   val als = new CollectiveALS("profile_id", "content_id", "artist_id")
-    .setMaxIter(20)
-    .setRegParam(0.01)
+    .setRank(100)
+    .setCheckpointInterval(3)
+    .setMaxIter(config.maxIter)
+    .setRegParam(config.regParam)
     .setRatingCol("thumb")
 
   val model = als.fit(("profile_id", "content_id") -> train, ("content_id", "artist_id") -> dimTrack)
@@ -60,5 +85,11 @@ object IHRCollectiveALS extends CueSheet {{
     lines += (header +: fields).mkString
   }
 
-  println(lines.mkString("\n"))
+  val result = lines.mkString("\n")
+  println(result)
+
+  val fs = FileSystem.get(sc.hadoopConfiguration)
+  val out = fs.create(new Path(s"collective-als/reg=${config.regParam},iter=${config.maxIter}.txt"))
+  out.write(result.getBytes("UTF-8"))
+  out.close()
 }}
