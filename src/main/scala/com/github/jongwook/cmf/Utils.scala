@@ -2,7 +2,7 @@ package com.github.jongwook.cmf
 
 import java.util.Random
 
-import org.apache.spark.sql.{Encoder, Dataset}
+import org.apache.spark.sql.{ Encoder, Dataset }
 
 object Utils {
 

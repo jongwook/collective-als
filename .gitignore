@@ -1,4 +1,6 @@
 .idea
+derby.log
+metastore_db
 DS_Store
 target
 
