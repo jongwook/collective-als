@@ -552,12 +552,15 @@ object CollectiveALS {
 
   private def makeFactorBlocks[ID](factors: RDD[(ID, Factor)], inBlocks: RDD[(Int, InBlock[ID])]): RDD[(Int, FactorBlock)] = {
     val numPartitions = inBlocks.getNumPartitions
+
     factors.map {
       case (id, factor) => ((id.asInstanceOf[Number].longValue() % numPartitions).toInt, (id, factor))
     }.groupByKey().mapValues {
       factors => factors.toMap
     }.join(inBlocks).mapValues[FactorBlock] {
-      case (factorMap, InBlock(srcIds, _, _, _)) => srcIds.map(factorMap.get).flatten
+      case (factorMap, InBlock(srcIds, _, _, _)) =>
+        val factorsWhenMissing: Factor = factorMap.values.head.map(_ => 0f) //todo: Kai - sometimes the id is missing from factorMap , not sure what todo, but this gives us a default factor for
+        srcIds.map(id => factorMap.get(id).getOrElse(factorsWhenMissing))
     }
   }
 
