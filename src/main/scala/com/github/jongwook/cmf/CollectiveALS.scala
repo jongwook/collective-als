@@ -27,7 +27,7 @@ class CollectiveALS(entities: String*) extends Serializable {
   var rank: Int = 10
 
   val numBlocks = new Array[Int](entities.size)
-  ju.Arrays.fill(numBlocks, 10)
+  ju.Arrays.fill(numBlocks, 2000)
 
   def numUserBlocks: Int = numBlocks(0)
   def numItemBlocks: Int = numBlocks(1)
