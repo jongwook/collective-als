@@ -557,7 +557,7 @@ object CollectiveALS {
     }.groupByKey().mapValues {
       factors => factors.toMap
     }.join(inBlocks).mapValues[FactorBlock] {
-      case (factorMap, InBlock(srcIds, _, _, _)) => srcIds.map(factorMap.apply)
+      case (factorMap, InBlock(srcIds, _, _, _)) => srcIds.map(factorMap.get).flatten
     }
   }
 
