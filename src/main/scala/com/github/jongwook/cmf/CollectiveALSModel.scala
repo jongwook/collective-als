@@ -29,6 +29,8 @@ class CollectiveALSModel(rank: Int, factors: DataFrame*) extends Serializable {
     this
   }
 
+  def factorMap: Map[String, DataFrame] = cols.toList.zip(factors.toList).toMap
+
   def setPredictionCol(value: String): this.type = { predictionCol = value; this }
 
   val checkedCast = udf { (n: Double) =>
