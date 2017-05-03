@@ -1,12 +1,12 @@
 package com.github.jongwook.cmf
 
-import java.{util => ju}
+import java.{ util => ju }
 
-import com.github.fommil.netlib.BLAS.{getInstance => blas}
+import com.github.fommil.netlib.BLAS.{ getInstance => blas }
 import com.github.jongwook.cmf.spark.SchemaUtils
 import org.apache.spark.sql.functions._
-import org.apache.spark.sql.types.{DoubleType, FloatType, StructType}
-import org.apache.spark.sql.{DataFrame, Dataset}
+import org.apache.spark.sql.types.{ DoubleType, FloatType, StructType }
+import org.apache.spark.sql.{ DataFrame, Dataset }
 
 class CollectiveALSModel(rank: Int, factors: DataFrame*) extends Serializable {
 
@@ -28,6 +28,8 @@ class CollectiveALSModel(rank: Int, factors: DataFrame*) extends Serializable {
     System.arraycopy(values.toArray, 0, cols, 0, values.length)
     this
   }
+
+  def factorMap: Map[String, DataFrame] = cols.toList.zip(factors.toList).toMap
 
   def setPredictionCol(value: String): this.type = { predictionCol = value; this }
 
@@ -59,12 +61,18 @@ class CollectiveALSModel(rank: Int, factors: DataFrame*) extends Serializable {
       }
     }
     dataset
-      .join(leftFactors,
-        checkedCast(dataset(leftEntity).cast(DoubleType)) === leftFactors("id"), "left")
-      .join(rightFactors,
-        checkedCast(dataset(rightEntity).cast(DoubleType)) === rightFactors("id"), "left")
-      .select(dataset("*"),
-        predict(leftFactors("features"), rightFactors("features")).as(predictionCol))
+      .join(
+        leftFactors,
+        checkedCast(dataset(leftEntity).cast(DoubleType)) === leftFactors("id"), "left"
+      )
+      .join(
+        rightFactors,
+        checkedCast(dataset(rightEntity).cast(DoubleType)) === rightFactors("id"), "left"
+      )
+      .select(
+        dataset("*"),
+        predict(leftFactors("features"), rightFactors("features")).as(predictionCol)
+      )
   }
 
   def transformSchema(schema: StructType): StructType = {

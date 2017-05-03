@@ -1,18 +1,18 @@
 package com.github.jongwook.cmf
 
-import java.{util => ju}
+import java.{ util => ju }
 
-import com.github.fommil.netlib.BLAS.{getInstance => blas}
+import com.github.fommil.netlib.BLAS.{ getInstance => blas }
 import com.github.jongwook.cmf.CollectiveALS.Rating
 import com.github.jongwook.cmf.spark._
 import org.apache.spark.annotation.DeveloperApi
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.Dataset
 import org.apache.spark.sql.functions._
-import org.apache.spark.sql.types.{DoubleType, FloatType, StructType}
+import org.apache.spark.sql.types.{ DoubleType, FloatType, StructType }
 import org.apache.spark.storage.StorageLevel
 import org.apache.spark.util.collection.OpenHashSet
-import org.apache.spark.{Dependency, Partitioner, ShuffleDependency, SparkContext}
+import org.apache.spark.{ Dependency, Partitioner, ShuffleDependency, SparkContext }
 import org.slf4j.LoggerFactory
 
 import scala.collection.mutable
@@ -20,7 +20,7 @@ import scala.collection.mutable.ArrayBuffer
 import scala.reflect.ClassTag
 import scala.util.Sorting
 import scala.util.hashing.byteswap64
-
+import scala.language.reflectiveCalls
 
 class CollectiveALS(entities: String*) extends Serializable {
 
@@ -158,14 +158,14 @@ object CollectiveALS {
   class CholeskySolver extends LeastSquaresNESolver {
 
     /**
-      * Solves a least squares problem with L2 regularization:
-      *
-      *   min norm(A x - b)^2^ + lambda * norm(x)^2^
-      *
-      * @param ne a [[NormalEquation]] instance that contains AtA, Atb, and n (number of instances)
-      * @param lambda regularization constant
-      * @return the solution x
-      */
+     * Solves a least squares problem with L2 regularization:
+     *
+     *   min norm(A x - b)^2^ + lambda * norm(x)^2^
+     *
+     * @param ne a [[NormalEquation]] instance that contains AtA, Atb, and n (number of instances)
+     * @param lambda regularization constant
+     * @return the solution x
+     */
     override def solve(ne: NormalEquation, lambda: Double): Array[Float] = {
       val k = ne.k
       // Add scaled lambda to the diagonals of AtA.
@@ -207,11 +207,11 @@ object CollectiveALS {
     }
 
     /**
-      * Solves a nonnegative least squares problem with L2 regularization:
-      *
-      *   min_x_  norm(A x - b)^2^ + lambda * n * norm(x)^2^
-      *   subject to x >= 0
-      */
+     * Solves a nonnegative least squares problem with L2 regularization:
+     *
+     *   min_x_  norm(A x - b)^2^ + lambda * n * norm(x)^2^
+     *   subject to x >= 0
+     */
     override def solve(ne: NormalEquation, lambda: Double): Array[Float] = {
       val rank = ne.k
       initialize(rank)
@@ -222,9 +222,9 @@ object CollectiveALS {
     }
 
     /**
-      * Given a triangular matrix in the order of fillXtX above, compute the full symmetric square
-      * matrix that it represents, storing it into destMatrix.
-      */
+     * Given a triangular matrix in the order of fillXtX above, compute the full symmetric square
+     * matrix that it represents, storing it into destMatrix.
+     */
     private def fillAtA(triAtA: Array[Double], lambda: Double) {
       var i = 0
       var pos = 0
@@ -245,14 +245,14 @@ object CollectiveALS {
   }
 
   /**
-    * Representing a normal equation to solve the following weighted least squares problem:
-    *
-    * minimize \sum,,i,, c,,i,, (a,,i,,^T^ x - b,,i,,)^2^ + lambda * x^T^ x.
-    *
-    * Its normal equation is given by
-    *
-    * \sum,,i,, c,,i,, (a,,i,, a,,i,,^T^ x - b,,i,, a,,i,,) + lambda * x = 0.
-    */
+   * Representing a normal equation to solve the following weighted least squares problem:
+   *
+   * minimize \sum,,i,, c,,i,, (a,,i,,^T^ x - b,,i,,)^2^ + lambda * x^T^ x.
+   *
+   * Its normal equation is given by
+   *
+   * \sum,,i,, c,,i,, (a,,i,, a,,i,,^T^ x - b,,i,, a,,i,,) + lambda * x = 0.
+   */
   class NormalEquation(val k: Int) extends Serializable {
 
     /** Number of entries in the upper triangular part of a k-by-k matrix. */
@@ -301,9 +301,9 @@ object CollectiveALS {
   }
 
   /**
-    * :: DeveloperApi ::
-    * Implementation of the ALS algorithm.
-    */
+   * :: DeveloperApi ::
+   * Implementation of the ALS algorithm.
+   */
   @DeveloperApi
   def train[ID: ClassTag]( // scalastyle:ignore
     data: Seq[((Int, Int), RDD[Rating[ID]])],
@@ -318,11 +318,16 @@ object CollectiveALS {
     intermediateRDDStorageLevel: StorageLevel = StorageLevel.MEMORY_AND_DISK,
     finalRDDStorageLevel: StorageLevel = StorageLevel.MEMORY_AND_DISK,
     checkpointInterval: Int = 10,
-    seed: Long = 0L)(
-    implicit ord: Ordering[ID]): Seq[RDD[(ID, Array[Float])]] = {
+    seed: Long = 0L
+  )(
+    implicit
+    ord: Ordering[ID]
+  ): Seq[RDD[(ID, Array[Float])]] = {
 
-    require(intermediateRDDStorageLevel != StorageLevel.NONE,
-      "ALS is not designed to run without persisting intermediate RDDs.")
+    require(
+      intermediateRDDStorageLevel != StorageLevel.NONE,
+      "ALS is not designed to run without persisting intermediate RDDs."
+    )
 
     val sc = data.head._2.sparkContext
 
@@ -339,7 +344,7 @@ object CollectiveALS {
     }
 
     /** length: numEntities */
-    val indexEncoders = partitioners.map{ part => new LocalIndexEncoder(part.numPartitions) }
+    val indexEncoders = partitioners.map { part => new LocalIndexEncoder(part.numPartitions) }
 
     val solver = if (nonnegative) new NNLSSolver else new CholeskySolver
 
@@ -426,92 +431,93 @@ object CollectiveALS {
 
     val entityIdAndFactors = (0 until numEntities).map { entity =>
       entityFactors(entity)
-          .setName(s"${entities(entity)}Factors")
-          .persist(finalRDDStorageLevel)
+        .setName(s"${entities(entity)}Factors")
+        .persist(finalRDDStorageLevel)
     }
-//
-//    if (finalRDDStorageLevel != StorageLevel.NONE) {
-//      entityIdAndFactors.foreach(_.count())
-//      entityFactors.values.foreach(_.unpersist())
-//      entityInOutBlocks.foreach {
-//        case (_, (inBlock, outBlock)) =>
-//          inBlock.unpersist()
-//          outBlock.unpersist()
-//      }
-//    }
+    //
+    //    if (finalRDDStorageLevel != StorageLevel.NONE) {
+    //      entityIdAndFactors.foreach(_.count())
+    //      entityFactors.values.foreach(_.unpersist())
+    //      entityInOutBlocks.foreach {
+    //        case (_, (inBlock, outBlock)) =>
+    //          inBlock.unpersist()
+    //          outBlock.unpersist()
+    //      }
+    //    }
 
     entityIdAndFactors
 
-//
-//    if (implicitPrefs) {
-//      for (iter <- 1 to maxIter) {
-//        userFactors.setName(s"userFactors-$iter").persist(intermediateRDDStorageLevel)
-//        val previousItemFactors = itemFactors
-//        itemFactors = computeFactors(userFactors, userOutBlocks, itemInBlocks, rank, regParam,
-//          userLocalIndexEncoder, implicitPrefs, alpha, solver)
-//        previousItemFactors.unpersist()
-//        itemFactors.setName(s"itemFactors-$iter").persist(intermediateRDDStorageLevel)
-//        // TODO: Generalize PeriodicGraphCheckpointer and use it here.
-//        val deps = itemFactors.dependencies
-//        val previousUserFactors = userFactors
-//        userFactors = computeFactors(itemFactors, itemOutBlocks, userInBlocks, rank, regParam,
-//          itemLocalIndexEncoder, implicitPrefs, alpha, solver)
-//        previousUserFactors.unpersist()
-//      }
-//    } else {
-//      for (iter <- 0 until maxIter) {
-//        itemFactors = computeFactors(userFactors, userOutBlocks, itemInBlocks, rank, regParam,
-//          userLocalIndexEncoder, solver = solver)
-//        userFactors = computeFactors(itemFactors, itemOutBlocks, userInBlocks, rank, regParam,
-//          itemLocalIndexEncoder, solver = solver)
-//      }
-//    }
+    //
+    //    if (implicitPrefs) {
+    //      for (iter <- 1 to maxIter) {
+    //        userFactors.setName(s"userFactors-$iter").persist(intermediateRDDStorageLevel)
+    //        val previousItemFactors = itemFactors
+    //        itemFactors = computeFactors(userFactors, userOutBlocks, itemInBlocks, rank, regParam,
+    //          userLocalIndexEncoder, implicitPrefs, alpha, solver)
+    //        previousItemFactors.unpersist()
+    //        itemFactors.setName(s"itemFactors-$iter").persist(intermediateRDDStorageLevel)
+    //        // TODO: Generalize PeriodicGraphCheckpointer and use it here.
+    //        val deps = itemFactors.dependencies
+    //        val previousUserFactors = userFactors
+    //        userFactors = computeFactors(itemFactors, itemOutBlocks, userInBlocks, rank, regParam,
+    //          itemLocalIndexEncoder, implicitPrefs, alpha, solver)
+    //        previousUserFactors.unpersist()
+    //      }
+    //    } else {
+    //      for (iter <- 0 until maxIter) {
+    //        itemFactors = computeFactors(userFactors, userOutBlocks, itemInBlocks, rank, regParam,
+    //          userLocalIndexEncoder, solver = solver)
+    //        userFactors = computeFactors(itemFactors, itemOutBlocks, userInBlocks, rank, regParam,
+    //          itemLocalIndexEncoder, solver = solver)
+    //      }
+    //    }
   }
 
   /**
-    * Factor block that stores factors (Array[Float]) for each entity as a record in RDD
-    */
+   * Factor block that stores factors (Array[Float]) for each entity as a record in RDD
+   */
   private type Factor = Array[Float]
 
   /**
-    * Factor block that stores factors (Array[Float]) in an Array.
-    */
+   * Factor block that stores factors (Array[Float]) in an Array.
+   */
   private type FactorBlock = Array[Array[Float]]
 
   /**
-    * Out-link block that stores, for each dst (item/user) block, which src (user/item) factors to
-    * send. For example, outLinkBlock(0) contains the local indices (not the original src IDs) of the
-    * src factors in this block to send to dst block 0.
-    */
+   * Out-link block that stores, for each dst (item/user) block, which src (user/item) factors to
+   * send. For example, outLinkBlock(0) contains the local indices (not the original src IDs) of the
+   * src factors in this block to send to dst block 0.
+   */
   private type OutBlock = Array[Array[Int]]
 
   /**
-    * In-link block for computing src (user/item) factors. This includes the original src IDs
-    * of the elements within this block as well as encoded dst (item/user) indices and corresponding
-    * ratings. The dst indices are in the form of (blockId, localIndex), which are not the original
-    * dst IDs. To compute src factors, we expect receiving dst factors that match the dst indices.
-    * For example, if we have an in-link record
-    *
-    * {srcId: 0, dstBlockId: 2, dstLocalIndex: 3, rating: 5.0},
-    *
-    * and assume that the dst factors are stored as dstFactors: Map[Int, Array[Array[Float]]], which
-    * is a blockId to dst factors map, the corresponding dst factor of the record is dstFactor(2)(3).
-    *
-    * We use a CSC-like (compressed sparse column) format to store the in-link information. So we can
-    * compute src factors one after another using only one normal equation instance.
-    *
-    * @param srcIds src ids (ordered)
-    * @param dstPtrs dst pointers. Elements in range [dstPtrs(i), dstPtrs(i+1)) of dst indices and
-    *                ratings are associated with srcIds(i).
-    * @param dstEncodedIndices encoded dst indices
-    * @param ratings ratings
-    * @see [[LocalIndexEncoder]]
-    */
+   * In-link block for computing src (user/item) factors. This includes the original src IDs
+   * of the elements within this block as well as encoded dst (item/user) indices and corresponding
+   * ratings. The dst indices are in the form of (blockId, localIndex), which are not the original
+   * dst IDs. To compute src factors, we expect receiving dst factors that match the dst indices.
+   * For example, if we have an in-link record
+   *
+   * {srcId: 0, dstBlockId: 2, dstLocalIndex: 3, rating: 5.0},
+   *
+   * and assume that the dst factors are stored as dstFactors: Map[Int, Array[Array[Float]]], which
+   * is a blockId to dst factors map, the corresponding dst factor of the record is dstFactor(2)(3).
+   *
+   * We use a CSC-like (compressed sparse column) format to store the in-link information. So we can
+   * compute src factors one after another using only one normal equation instance.
+   *
+   * @param srcIds src ids (ordered)
+   * @param dstPtrs dst pointers. Elements in range [dstPtrs(i), dstPtrs(i+1)) of dst indices and
+   *                ratings are associated with srcIds(i).
+   * @param dstEncodedIndices encoded dst indices
+   * @param ratings ratings
+   * @see [[LocalIndexEncoder]]
+   */
   case class InBlock[@specialized(Int, Long) ID: ClassTag](
-    srcIds: Array[ID],
-    dstPtrs: Array[Int],
-    dstEncodedIndices: Array[Int],
-    ratings: Array[Float]) {
+      srcIds: Array[ID],
+      dstPtrs: Array[Int],
+      dstEncodedIndices: Array[Int],
+      ratings: Array[Float]
+  ) {
     /** Size of the block. */
     def size: Int = ratings.length
     require(dstEncodedIndices.length == size)
@@ -519,16 +525,17 @@ object CollectiveALS {
   }
 
   /**
-    * Initializes factors randomly given the in-link blocks.
-    *
-    * @param ids entity ids
-    * @param rank rank
-    * @return initialized factor blocks
-    */
+   * Initializes factors randomly given the in-link blocks.
+   *
+   * @param ids entity ids
+   * @param rank rank
+   * @return initialized factor blocks
+   */
   private def initialize[ID](
     ids: RDD[ID],
     rank: Int,
-    seed: Long): RDD[(ID, Factor)] = {
+    seed: Long
+  ): RDD[(ID, Factor)] = {
     // Choose a unit vector uniformly at random from the unit sphere, but from the
     // "first quadrant" where all elements are nonnegative. This can be done by choosing
     // elements distributed as Normal(0,1) and taking the absolute value, and then normalizing.
@@ -545,12 +552,15 @@ object CollectiveALS {
 
   private def makeFactorBlocks[ID](factors: RDD[(ID, Factor)], inBlocks: RDD[(Int, InBlock[ID])]): RDD[(Int, FactorBlock)] = {
     val numPartitions = inBlocks.getNumPartitions
+
     factors.map {
       case (id, factor) => ((id.asInstanceOf[Number].longValue() % numPartitions).toInt, (id, factor))
     }.groupByKey().mapValues {
       factors => factors.toMap
     }.join(inBlocks).mapValues[FactorBlock] {
-      case (factorMap, InBlock(srcIds, _, _, _)) => srcIds.map(factorMap.apply)
+      case (factorMap, InBlock(srcIds, _, _, _)) =>
+        val factorsWhenMissing: Factor = factorMap.values.head.map(_ => 0f) //todo: Kai - sometimes the id is missing from factorMap , not sure what todo, but this gives us a default factor for
+        srcIds.map(id => factorMap.get(id).getOrElse(factorsWhenMissing))
     }
   }
 
@@ -561,12 +571,13 @@ object CollectiveALS {
   }
 
   /**
-    * A rating block that contains src IDs, dst IDs, and ratings, stored in primitive arrays.
-    */
+   * A rating block that contains src IDs, dst IDs, and ratings, stored in primitive arrays.
+   */
   case class RatingBlock[@specialized(Int, Long) ID: ClassTag](
-    srcIds: Array[ID],
-    dstIds: Array[ID],
-    ratings: Array[Float]) {
+      srcIds: Array[ID],
+      dstIds: Array[ID],
+      ratings: Array[Float]
+  ) {
     /** Size of the block. */
     def size: Int = srcIds.length
     require(dstIds.length == srcIds.length)
@@ -574,10 +585,10 @@ object CollectiveALS {
   }
 
   /**
-    * Builder for [[RatingBlock]]. [[scala.collection.mutable.ArrayBuilder]] is used to avoid boxing/unboxing.
-    */
+   * Builder for [[RatingBlock]]. [[scala.collection.mutable.ArrayBuilder]] is used to avoid boxing/unboxing.
+   */
   class RatingBlockBuilder[@specialized(Int, Long) ID: ClassTag]
-    extends Serializable {
+      extends Serializable {
 
     private val srcIds = mutable.ArrayBuilder.make[ID]
     private val dstIds = mutable.ArrayBuilder.make[ID]
@@ -609,17 +620,18 @@ object CollectiveALS {
   }
 
   /**
-    * Partitions raw ratings into blocks.
-    *
-    * @param ratings raw ratings
-    * @param srcPart partitioner for src IDs
-    * @param dstPart partitioner for dst IDs
-    * @return an RDD of rating blocks in the form of ((srcBlockId, dstBlockId), ratingBlock)
-    */
+   * Partitions raw ratings into blocks.
+   *
+   * @param ratings raw ratings
+   * @param srcPart partitioner for src IDs
+   * @param dstPart partitioner for dst IDs
+   * @return an RDD of rating blocks in the form of ((srcBlockId, dstBlockId), ratingBlock)
+   */
   private def partitionRatings[ID: ClassTag](
     ratings: RDD[Rating[ID]],
     srcPart: Partitioner,
-    dstPart: Partitioner): RDD[((Int, Int), RatingBlock[ID])] = {
+    dstPart: Partitioner
+  ): RDD[((Int, Int), RatingBlock[ID])] = {
 
     /* The implementation produces the same result as the following but generates less objects.
 
@@ -647,10 +659,11 @@ object CollectiveALS {
           Iterator.empty
         }
       } ++ {
-        builders.view.zipWithIndex.filter(_._1.size > 0).map { case (block, idx) =>
-          val srcBlockId = idx % srcPart.numPartitions
-          val dstBlockId = idx / srcPart.numPartitions
-          ((srcBlockId, dstBlockId), block.build())
+        builders.view.zipWithIndex.filter(_._1.size > 0).map {
+          case (block, idx) =>
+            val srcBlockId = idx % srcPart.numPartitions
+            val dstBlockId = idx / srcPart.numPartitions
+            ((srcBlockId, dstBlockId), block.build())
         }
       }
     }.groupByKey().mapValues { blocks =>
@@ -661,31 +674,35 @@ object CollectiveALS {
   }
 
   /**
-    * Builder for uncompressed in-blocks of (srcId, dstEncodedIndex, rating) tuples.
-    *
-    * @param encoder encoder for dst indices
-    */
+   * Builder for uncompressed in-blocks of (srcId, dstEncodedIndex, rating) tuples.
+   *
+   * @param encoder encoder for dst indices
+   */
   class UncompressedInBlockBuilder[@specialized(Int, Long) ID: ClassTag](
-    encoder: LocalIndexEncoder)(
-    implicit ord: Ordering[ID]) {
+      encoder: LocalIndexEncoder
+  )(
+      implicit
+      ord: Ordering[ID]
+  ) {
 
     private val srcIds = mutable.ArrayBuilder.make[ID]
     private val dstEncodedIndices = mutable.ArrayBuilder.make[Int]
     private val ratings = mutable.ArrayBuilder.make[Float]
 
     /**
-      * Adds a dst block of (srcId, dstLocalIndex, rating) tuples.
-      *
-      * @param dstBlockId dst block ID
-      * @param srcIds original src IDs
-      * @param dstLocalIndices dst local indices
-      * @param ratings ratings
-      */
+     * Adds a dst block of (srcId, dstLocalIndex, rating) tuples.
+     *
+     * @param dstBlockId dst block ID
+     * @param srcIds original src IDs
+     * @param dstLocalIndices dst local indices
+     * @param ratings ratings
+     */
     def add(
       dstBlockId: Int,
       srcIds: Array[ID],
       dstLocalIndices: Array[Int],
-      ratings: Array[Float]): this.type = {
+      ratings: Array[Float]
+    ): this.type = {
       val sz = srcIds.length
       require(dstLocalIndices.length == sz)
       require(ratings.length == sz)
@@ -706,22 +723,25 @@ object CollectiveALS {
   }
 
   /**
-    * A block of (srcId, dstEncodedIndex, rating) tuples stored in primitive arrays.
-    */
+   * A block of (srcId, dstEncodedIndex, rating) tuples stored in primitive arrays.
+   */
   class UncompressedInBlock[@specialized(Int, Long) ID: ClassTag](
-    val srcIds: Array[ID],
-    val dstEncodedIndices: Array[Int],
-    val ratings: Array[Float])(
-    implicit ord: Ordering[ID]) {
+      val srcIds: Array[ID],
+      val dstEncodedIndices: Array[Int],
+      val ratings: Array[Float]
+  )(
+      implicit
+      ord: Ordering[ID]
+  ) {
 
     /** Size the of block. */
     def length: Int = srcIds.length
 
     /**
-      * Compresses the block into an [[InBlock]]. The algorithm is the same as converting a
-      * sparse matrix from coordinate list (COO) format into compressed sparse column (CSC) format.
-      * Sorting is done using Spark's built-in Timsort to avoid generating too many objects.
-      */
+     * Compresses the block into an [[InBlock]]. The algorithm is the same as converting a
+     * sparse matrix from coordinate list (COO) format into compressed sparse column (CSC) format.
+     * Sorting is done using Spark's built-in Timsort to avoid generating too many objects.
+     */
     def compress(): InBlock[ID] = {
       val sz = length
       assert(sz > 0, "Empty in-link block should not exist.")
@@ -774,12 +794,14 @@ object CollectiveALS {
   }
 
   /**
-    * A wrapper that holds a primitive key.
-    *
-    * @see [[UncompressedInBlockSort]]
-    */
+   * A wrapper that holds a primitive key.
+   *
+   * @see [[UncompressedInBlockSort]]
+   */
   private class KeyWrapper[@specialized(Int, Long) ID: ClassTag](
-    implicit ord: Ordering[ID]) extends Ordered[KeyWrapper[ID]] {
+      implicit
+      ord: Ordering[ID]
+  ) extends Ordered[KeyWrapper[ID]] {
 
     var key: ID = _
 
@@ -794,18 +816,21 @@ object CollectiveALS {
   }
 
   /**
-    * [[SortDataFormat]] of [[UncompressedInBlock]] used by [[Sorter]].
-    */
+   * [[SortDataFormat]] of [[UncompressedInBlock]] used by [[Sorter]].
+   */
   private class UncompressedInBlockSort[@specialized(Int, Long) ID: ClassTag](
-    implicit ord: Ordering[ID])
-    extends SortDataFormat[KeyWrapper[ID], UncompressedInBlock[ID]] {
+    implicit
+    ord: Ordering[ID]
+  )
+      extends SortDataFormat[KeyWrapper[ID], UncompressedInBlock[ID]] {
 
     override def newKey(): KeyWrapper[ID] = new KeyWrapper()
 
     override def getKey(
       data: UncompressedInBlock[ID],
       pos: Int,
-      reuse: KeyWrapper[ID]): KeyWrapper[ID] = {
+      reuse: KeyWrapper[ID]
+    ): KeyWrapper[ID] = {
       if (reuse == null) {
         new KeyWrapper().setKey(data.srcIds(pos))
       } else {
@@ -815,14 +840,16 @@ object CollectiveALS {
 
     override def getKey(
       data: UncompressedInBlock[ID],
-      pos: Int): KeyWrapper[ID] = {
+      pos: Int
+    ): KeyWrapper[ID] = {
       getKey(data, pos, null)
     }
 
     private def swapElements[@specialized(Int, Float) T](
       data: Array[T],
       pos0: Int,
-      pos1: Int): Unit = {
+      pos1: Int
+    ): Unit = {
       val tmp = data(pos0)
       data(pos0) = data(pos1)
       data(pos1) = tmp
@@ -839,7 +866,8 @@ object CollectiveALS {
       srcPos: Int,
       dst: UncompressedInBlock[ID],
       dstPos: Int,
-      length: Int): Unit = {
+      length: Int
+    ): Unit = {
       System.arraycopy(src.srcIds, srcPos, dst.srcIds, dstPos, length)
       System.arraycopy(src.dstEncodedIndices, srcPos, dst.dstEncodedIndices, dstPos, length)
       System.arraycopy(src.ratings, srcPos, dst.ratings, dstPos, length)
@@ -847,14 +875,16 @@ object CollectiveALS {
 
     override def allocate(length: Int): UncompressedInBlock[ID] = {
       new UncompressedInBlock(
-        new Array[ID](length), new Array[Int](length), new Array[Float](length))
+        new Array[ID](length), new Array[Int](length), new Array[Float](length)
+      )
     }
 
     override def copyElement(
       src: UncompressedInBlock[ID],
       srcPos: Int,
       dst: UncompressedInBlock[ID],
-      dstPos: Int): Unit = {
+      dstPos: Int
+    ): Unit = {
       dst.srcIds(dstPos) = src.srcIds(srcPos)
       dst.dstEncodedIndices(dstPos) = src.dstEncodedIndices(srcPos)
       dst.ratings(dstPos) = src.ratings(srcPos)
@@ -862,21 +892,24 @@ object CollectiveALS {
   }
 
   /**
-    * Creates in-blocks and out-blocks from rating blocks.
-    *
-    * @param prefix prefix for in/out-block names
-    * @param ratingBlocks rating blocks
-    * @param srcPart partitioner for src IDs
-    * @param dstPart partitioner for dst IDs
-    * @return (in-blocks, out-blocks)
-    */
+   * Creates in-blocks and out-blocks from rating blocks.
+   *
+   * @param prefix prefix for in/out-block names
+   * @param ratingBlocks rating blocks
+   * @param srcPart partitioner for src IDs
+   * @param dstPart partitioner for dst IDs
+   * @return (in-blocks, out-blocks)
+   */
   private def makeBlocks[ID: ClassTag](
     prefix: String,
     ratingBlocks: RDD[((Int, Int), RatingBlock[ID])],
     srcPart: Partitioner,
     dstPart: Partitioner,
-    storageLevel: StorageLevel)(
-    implicit srcOrd: Ordering[ID]): (RDD[(Int, InBlock[ID])], RDD[(Int, OutBlock)]) = {
+    storageLevel: StorageLevel
+  )(
+    implicit
+    srcOrd: Ordering[ID]
+  ): (RDD[(Int, InBlock[ID])], RDD[(Int, OutBlock)]) = {
     val inBlocks = ratingBlocks.map {
       case ((srcBlockId, dstBlockId), RatingBlock(srcIds, dstIds, ratings)) =>
         // The implementation is a faster version of
@@ -901,59 +934,62 @@ object CollectiveALS {
           i += 1
         }
         logger.debug(
-          "Converting to local indices took " + (System.nanoTime() - start) / 1e9 + " seconds.")
+          "Converting to local indices took " + (System.nanoTime() - start) / 1e9 + " seconds."
+        )
         val dstLocalIndices = dstIds.map(dstIdToLocalIndex.apply)
         (srcBlockId, (dstBlockId, srcIds, dstLocalIndices, ratings))
     }.groupByKey(new ALSPartitioner(srcPart.numPartitions))
       .mapValues { iter =>
         val builder =
           new UncompressedInBlockBuilder[ID](new LocalIndexEncoder(dstPart.numPartitions))
-        iter.foreach { case (dstBlockId, srcIds, dstLocalIndices, ratings) =>
-          builder.add(dstBlockId, srcIds, dstLocalIndices, ratings)
+        iter.foreach {
+          case (dstBlockId, srcIds, dstLocalIndices, ratings) =>
+            builder.add(dstBlockId, srcIds, dstLocalIndices, ratings)
         }
         builder.build().compress()
       }.setName(prefix + "InBlocks")
       .persist(storageLevel)
-    val outBlocks = inBlocks.mapValues { case InBlock(srcIds, dstPtrs, dstEncodedIndices, _) =>
-      val encoder = new LocalIndexEncoder(dstPart.numPartitions)
-      val activeIds = Array.fill(dstPart.numPartitions)(mutable.ArrayBuilder.make[Int])
-      var i = 0
-      val seen = new Array[Boolean](dstPart.numPartitions)
-      while (i < srcIds.length) {
-        var j = dstPtrs(i)
-        ju.Arrays.fill(seen, false)
-        while (j < dstPtrs(i + 1)) {
-          val dstBlockId = encoder.blockId(dstEncodedIndices(j))
-          if (!seen(dstBlockId)) {
-            activeIds(dstBlockId) += i // add the local index in this out-block
-            seen(dstBlockId) = true
+    val outBlocks = inBlocks.mapValues {
+      case InBlock(srcIds, dstPtrs, dstEncodedIndices, _) =>
+        val encoder = new LocalIndexEncoder(dstPart.numPartitions)
+        val activeIds = Array.fill(dstPart.numPartitions)(mutable.ArrayBuilder.make[Int])
+        var i = 0
+        val seen = new Array[Boolean](dstPart.numPartitions)
+        while (i < srcIds.length) {
+          var j = dstPtrs(i)
+          ju.Arrays.fill(seen, false)
+          while (j < dstPtrs(i + 1)) {
+            val dstBlockId = encoder.blockId(dstEncodedIndices(j))
+            if (!seen(dstBlockId)) {
+              activeIds(dstBlockId) += i // add the local index in this out-block
+              seen(dstBlockId) = true
+            }
+            j += 1
           }
-          j += 1
+          i += 1
         }
-        i += 1
-      }
-      activeIds.map { x =>
-        x.result()
-      }
+        activeIds.map { x =>
+          x.result()
+        }
     }.setName(prefix + "OutBlocks")
       .persist(storageLevel)
     (inBlocks, outBlocks)
   }
 
   /**
-    * Compute dst factors by constructing and solving least square problems.
-    *
-    * @param srcFactorSeq src factors
-    * @param srcOutBlockSeq src out-blocks
-    * @param dstInBlockSeq dst in-blocks
-    * @param rank rank
-    * @param regParam regularization constant
-    * @param srcEncoder encoder for src local indices
-    * @param implicitPrefs whether to use implicit preference
-    * @param alpha the alpha constant in the implicit preference formulation
-    * @param solver solver for least squares problems
-    * @return dst factors
-    */
+   * Compute dst factors by constructing and solving least square problems.
+   *
+   * @param srcFactorSeq src factors
+   * @param srcOutBlockSeq src out-blocks
+   * @param dstInBlockSeq dst in-blocks
+   * @param rank rank
+   * @param regParam regularization constant
+   * @param srcEncoder encoder for src local indices
+   * @param implicitPrefs whether to use implicit preference
+   * @param alpha the alpha constant in the implicit preference formulation
+   * @param solver solver for least squares problems
+   * @return dst factors
+   */
   private def computeFactors[ID: ClassTag](
     srcFactorSeq: Seq[(RDD[(ID, Factor)], RDD[(Int, InBlock[ID])])],
     srcOutBlockSeq: Seq[(Int, RDD[(Int, OutBlock)])],
@@ -963,7 +999,8 @@ object CollectiveALS {
     srcEncoder: LocalIndexEncoder,
     implicitPrefs: Boolean = false,
     alpha: Double = 1.0,
-    solver: LeastSquaresNESolver): RDD[(ID, Factor)] = {
+    solver: LeastSquaresNESolver
+  ): RDD[(ID, Factor)] = {
 
     import org.apache.spark.SparkContext._
 
@@ -971,12 +1008,12 @@ object CollectiveALS {
       case (((src, srcOutBlocks), (dst, dstInBlocks)), (srcFactorRDD, srcInBlocks)) =>
         val numSrcBlocks = srcFactorRDD.partitions.length
 
-//        val a = srcFactorRDD.keys.collect()
-//        println(s"srcFactorRDD contains 67: ${a.contains(67)}, size ${a.size}")
-//        val b = srcInBlocks.values.flatMap(_.srcIds).collect()
-//        println(s"srcInBlocks contains 67: ${b.contains(67)}, size ${b.size}")
-//        val c = dstInBlocks.values.flatMap(_.srcIds).collect()
-//        println(s"dstInBlocks contains 67: ${c.contains(67)}, size ${c.size}")
+        //        val a = srcFactorRDD.keys.collect()
+        //        println(s"srcFactorRDD contains 67: ${a.contains(67)}, size ${a.size}")
+        //        val b = srcInBlocks.values.flatMap(_.srcIds).collect()
+        //        println(s"srcInBlocks contains 67: ${b.contains(67)}, size ${b.size}")
+        //        val c = dstInBlocks.values.flatMap(_.srcIds).collect()
+        //        println(s"dstInBlocks contains 67: ${c.contains(67)}, size ${c.size}")
 
         val srcFactorBlock = makeFactorBlocks(srcFactorRDD, srcInBlocks)
 
@@ -984,16 +1021,18 @@ object CollectiveALS {
 
         val srcOut = srcOutBlocks.join(srcFactorBlock).flatMap {
           case (srcBlockId, (srcOutBlock, srcFactors)) =>
-            srcOutBlock.view.zipWithIndex.map { case (activeIndices, dstBlockId) =>
-              (dstBlockId, (srcBlockId, activeIndices.map(idx => srcFactors(idx))))
+            srcOutBlock.view.zipWithIndex.map {
+              case (activeIndices, dstBlockId) =>
+                (dstBlockId, (srcBlockId, activeIndices.map(idx => srcFactors(idx))))
             }
         }
         val merged = srcOut.groupByKey(new ALSPartitioner(dstInBlocks.partitions.length))
         dstInBlocks.join(merged).flatMap {
           case (_, (InBlock(dstIds, srcPtrs, srcEncodedIndices, ratings), srcFactors)) =>
             val sortedSrcFactors = new Array[FactorBlock](numSrcBlocks)
-            srcFactors.foreach { case (srcBlockId, factors) =>
-              sortedSrcFactors(srcBlockId) = factors
+            srcFactors.foreach {
+              case (srcBlockId, factors) =>
+                sortedSrcFactors(srcBlockId) = factors
             }
             //val dstFactors = new Array[Array[Float]](dstIds.length)
             var j = 0
@@ -1052,27 +1091,28 @@ object CollectiveALS {
   }
 
   /**
-    * Computes the Gramian matrix of user or item factors, which is only used in implicit preference.
-    * Caching of the input factors is handled in [[CollectiveALS#train]].
-    */
+   * Computes the Gramian matrix of user or item factors, which is only used in implicit preference.
+   * Caching of the input factors is handled in [[CollectiveALS#train]].
+   */
   private def computeYtY(factorBlocks: RDD[(Int, FactorBlock)], rank: Int): NormalEquation = {
     factorBlocks.values.aggregate(new NormalEquation(rank))(
       seqOp = (ne, factors) => {
-        factors.foreach(ne.add(_, 0.0))
-        ne
-      },
-      combOp = (ne1, ne2) => ne1.merge(ne2))
+      factors.foreach(ne.add(_, 0.0))
+      ne
+    },
+      combOp = (ne1, ne2) => ne1.merge(ne2)
+    )
   }
 
   /**
-    * Encoder for storing (blockId, localIndex) into a single integer.
-    *
-    * We use the leading bits (including the sign bit) to store the block id and the rest to store
-    * the local index. This is based on the assumption that users/items are approximately evenly
-    * partitioned. With this assumption, we should be able to encode two billion distinct values.
-    *
-    * @param numBlocks number of blocks
-    */
+   * Encoder for storing (blockId, localIndex) into a single integer.
+   *
+   * We use the leading bits (including the sign bit) to store the block id and the rest to store
+   * the local index. This is based on the assumption that users/items are approximately evenly
+   * partitioned. With this assumption, we should be able to encode two billion distinct values.
+   *
+   * @param numBlocks number of blocks
+   */
   class LocalIndexEncoder(numBlocks: Int) extends Serializable {
 
     require(numBlocks > 0, s"numBlocks must be positive but found $numBlocks.")
@@ -1102,26 +1142,27 @@ object CollectiveALS {
   }
 
   /**
-    * Partitioner used by ALS. We require that getPartition is a projection. That is, for any key k,
-    * we have getPartition(getPartition(k)) = getPartition(k). Since the default HashPartitioner
-    * satisfies this requirement, we simply use a type alias here.
-    */
+   * Partitioner used by ALS. We require that getPartition is a projection. That is, for any key k,
+   * we have getPartition(getPartition(k)) = getPartition(k). Since the default HashPartitioner
+   * satisfies this requirement, we simply use a type alias here.
+   */
   type ALSPartitioner = org.apache.spark.HashPartitioner
 
   /**
-    * Private function to clean up all of the shuffles files from the dependencies and their parents.
-    */
+   * Private function to clean up all of the shuffles files from the dependencies and their parents.
+   */
   def cleanShuffleDependencies[T](
     sc: SparkContext,
     deps: Seq[Dependency[_]],
-    blocking: Boolean = false): Unit = {
+    blocking: Boolean = false
+  ): Unit = {
     // If there is no reference tracking we skip clean up.
     val field = sc.getClass.getDeclaredField("_cleaner")
     field.setAccessible(true)
     field.get(sc).asInstanceOf[Option[{ def doCleanupShuffle(id: Int, blocking: Boolean) }]].foreach { cleaner =>
       /**
-        * Clean the shuffles & all of its parents.
-        */
+       * Clean the shuffles & all of its parents.
+       */
       def cleanEagerly(dep: Dependency[_]): Unit = {
         if (dep.isInstanceOf[ShuffleDependency[_, _, _]]) {
           val shuffleId = dep.asInstanceOf[ShuffleDependency[_, _, _]].shuffleId

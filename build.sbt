@@ -1,15 +1,22 @@
-name := "collective-als"
 
-scalaVersion := "2.11.8"
+lazy val root = project.in(file(".")).
+  settings(
+    name := "collective-als",
 
-resolvers += "Sonatype Snapshots" at "https://oss.sonatype.org/content/repositories/snapshots"
+    scalaVersion := "2.11.8",
 
-libraryDependencies ++= Seq("provided", "test").map { config =>
-  "com.kakao.cuesheet" %% "cuesheet" % "0.10.0" % config
-} ++ Seq(
-  "com.github.scopt" %% "scopt" % "3.5.0" % "test",
-  "org.scalatest" %% "scalatest" % "3.0.0" % "test",
-  "com.github.jongwook" %% "spark-ranking-metrics" % "0.0.1" % "test",
-  "com.github.fommil.netlib" % "all" % "1.1.2" pomOnly()
-)
 
+    resolvers += "Sonatype Snapshots" at "https://oss.sonatype.org/content/repositories/snapshots",
+
+    scalacOptions := Seq("-feature", "-unchecked", "-encoding", "utf8"),
+
+    libraryDependencies ++= Seq(
+      "org.apache.spark" %% "spark-mllib" % "2.1.0" % Provided,
+      "com.kakao.cuesheet" %% "cuesheet" % "0.10.1-SNAPSHOT" % Test,
+      "org.scalatest" %% "scalatest" % "3.0.0" % Test,
+      "com.github.jongwook" %% "spark-ranking-metrics" % "0.0.1" % Test,
+      "com.github.fommil.netlib" % "all" % "1.1.2" pomOnly()
+    ),
+
+    organization := "com.iheart"
+  )

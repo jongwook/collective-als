@@ -1,8 +1,8 @@
 package com.github.jongwook.cmf.spark
 
-import java.{util => ju}
+import java.{ util => ju }
 
-import com.github.fommil.netlib.BLAS.{getInstance => blas}
+import com.github.fommil.netlib.BLAS.{ getInstance => blas }
 
 object NNLS {
   class Workspace(val n: Int) {
@@ -28,19 +28,19 @@ object NNLS {
   }
 
   /**
-    * Solve a least squares problem, possibly with nonnegativity constraints, by a modified
-    * projected gradient method.  That is, find x minimising ||Ax - b||_2 given A^T A and A^T b.
-    *
-    * We solve the problem
-    *   min_x      1/2 x^T ata x^T - x^T atb
-    *   subject to x >= 0
-    *
-    * The method used is similar to one described by Polyak (B. T. Polyak, The conjugate gradient
-    * method in extremal problems, Zh. Vychisl. Mat. Mat. Fiz. 9(4)(1969), pp. 94-112) for bound-
-    * constrained nonlinear programming.  Polyak unconditionally uses a conjugate gradient
-    * direction, however, while this method only uses a conjugate gradient direction if the last
-    * iteration did not cause a previously-inactive constraint to become active.
-    */
+   * Solve a least squares problem, possibly with nonnegativity constraints, by a modified
+   * projected gradient method.  That is, find x minimising ||Ax - b||_2 given A^T A and A^T b.
+   *
+   * We solve the problem
+   *   min_x      1/2 x^T ata x^T - x^T atb
+   *   subject to x >= 0
+   *
+   * The method used is similar to one described by Polyak (B. T. Polyak, The conjugate gradient
+   * method in extremal problems, Zh. Vychisl. Mat. Mat. Fiz. 9(4)(1969), pp. 94-112) for bound-
+   * constrained nonlinear programming.  Polyak unconditionally uses a conjugate gradient
+   * direction, however, while this method only uses a conjugate gradient direction if the last
+   * iteration did not cause a previously-inactive constraint to become active.
+   */
   def solve(ata: Array[Double], atb: Array[Double], ws: Workspace): Array[Double] = {
     ws.wipe()
 
@@ -62,7 +62,7 @@ object NNLS {
         || (step > 1e40) // too small; almost certainly numerical problems
         || (ndir < 1e-12 * nx) // gradient relatively too small
         || (ndir < 1e-32) // gradient absolutely too small; numerical issues may lurk
-        )
+      )
     }
 
     val grad = ws.grad
